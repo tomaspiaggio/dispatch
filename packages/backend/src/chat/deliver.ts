@@ -49,8 +49,15 @@ async function sendSlack(channelId: string, text: string) {
 
 type DeliverMessage = (message: { role: string; content: string }) => Promise<void>;
 
-export function createDeliveryCallback(platform: string, channelId: string): DeliverMessage {
-  return async ({ content }) => {
+export function createDeliveryCallback(
+  platform: string,
+  channelId: string,
+  options?: { skipStatus?: boolean },
+): DeliverMessage {
+  return async ({ role, content }) => {
+    // Skip status messages (e.g. "Still working on it...") for spawned tasks
+    if (options?.skipStatus && role === "status") return;
+
     try {
       if (platform === "telegram") {
         await sendTelegram(channelId, content);
@@ -104,7 +111,7 @@ export async function executePromptAndDeliver(
         run,
         log,
         timeoutMessage: "The task timed out.",
-        deliverMessage: createDeliveryCallback(platform, channelId),
+        deliverMessage: createDeliveryCallback(platform, channelId, { skipStatus: true }),
       });
     } catch (err) {
       log(`Background delivery error: ${err}`);
