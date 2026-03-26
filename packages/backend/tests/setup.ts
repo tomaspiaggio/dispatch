@@ -1,34 +1,20 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { execSync } from "child_process";
 import { setPrisma } from "../src/lib/prisma";
 
-let container: StartedPostgreSqlContainer;
 let prisma: PrismaClient;
 
+const DEFAULT_CONNECTION_STRING =
+  "postgresql://test:test@localhost:5432/dispatch_test";
+
 export async function setupTestDb() {
-  container = await new PostgreSqlContainer("postgres:16-alpine")
-    .withDatabase("dispatch_test")
-    .withUsername("test")
-    .withPassword("test")
-    .start();
-
-  const connectionString = container.getConnectionUri();
-
-  execSync(`npx prisma db push --url "${connectionString}"`, {
-    env: {
-      ...process.env,
-      DATABASE_URL: connectionString,
-    },
-    cwd: new URL("../", import.meta.url).pathname,
-    stdio: "pipe",
-  });
+  const connectionString =
+    process.env.__TEST_CONNECTION_STRING || DEFAULT_CONNECTION_STRING;
 
   const adapter = new PrismaPg({ connectionString });
   prisma = new PrismaClient({ adapter });
 
-  // Inject test prisma into the global singleton so tRPC router uses it
+  // Inject test prisma into the global singleton so step functions & tRPC router use it
   setPrisma(prisma);
 
   return { prisma, connectionString };
@@ -36,7 +22,6 @@ export async function setupTestDb() {
 
 export async function teardownTestDb() {
   await prisma?.$disconnect();
-  await container?.stop();
 }
 
 export function getTestPrisma() {
