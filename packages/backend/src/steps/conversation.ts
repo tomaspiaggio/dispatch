@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma";
-import { DEFAULT_SYSTEM_PROMPT } from "@dispatch/shared";
+import { DEFAULT_SYSTEM_PROMPT, MODELS } from "@dispatch/shared";
 import type { ModelMessage } from "ai";
 
 // Rough token estimation: ~4 chars per token
@@ -8,6 +8,7 @@ function estimateTokens(text: string): number {
 }
 
 const MAX_HISTORY_TOKENS = 400_000; // Leave room for system prompt + tools + response
+const COMPACTION_THRESHOLD = 30; // Only compact when we have this many messages to summarize
 
 export async function findOrCreateConversationStep(
   platform: string,
@@ -54,48 +55,94 @@ export async function getConversationHistoryStep(
   // Reverse to chronological order
   messages.reverse();
 
-  // Build messages and track token budget
-  const result: ModelMessage[] = [];
-  let tokenCount = 0;
-
-  // Always include the most recent messages, trim older ones if over budget
+  // Build messages and track token budget — iterate backwards from newest
+  // to find the split point between what fits and what gets compacted
+  const parsed: { role: string; content: string | any[]; contentStr: string; tokens: number }[] = [];
   for (const m of messages) {
     const rawContent = m.content ?? "";
     let content: string | any[] = rawContent;
 
-    // Handle multimodal JSON content
     if (rawContent.startsWith("[") || rawContent.startsWith("{")) {
       try {
-        const parsed = JSON.parse(rawContent);
-        if (Array.isArray(parsed)) {
-          content = parsed;
-        }
-      } catch {
-        // Not valid JSON or not an array, keep as string
-      }
+        const p = JSON.parse(rawContent);
+        if (Array.isArray(p)) content = p;
+      } catch {}
     }
 
     const contentStr = typeof content === "string" ? content : JSON.stringify(content);
-    const msgTokens = estimateTokens(contentStr);
+    parsed.push({ role: m.role, content, contentStr, tokens: estimateTokens(contentStr) });
+  }
 
-    if (tokenCount + msgTokens > MAX_HISTORY_TOKENS && result.length > 0) {
-      // Over budget — prepend a summary note and stop adding older messages
-      result.unshift({
-        role: "system" as any,
-        content:
-          "[Earlier conversation history was truncated to fit context window. The most recent messages are shown below.]",
-      });
+  // Find how many recent messages fit in the budget (iterate from end)
+  let tokenCount = 0;
+  let splitIdx = 0; // everything before this index gets compacted
+  for (let i = parsed.length - 1; i >= 0; i--) {
+    if (tokenCount + parsed[i].tokens > MAX_HISTORY_TOKENS) {
+      splitIdx = i + 1;
       break;
     }
+    tokenCount += parsed[i].tokens;
+  }
 
-    result.push({
-      role: m.role as "user" | "assistant",
-      content: content as any,
-    });
-    tokenCount += msgTokens;
+  const recentMessages = parsed.slice(splitIdx);
+  const droppedMessages = parsed.slice(0, splitIdx);
+
+  const result: ModelMessage[] = recentMessages.map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: m.content as any,
+  }));
+
+  // If we dropped messages, summarize them instead of just discarding
+  if (droppedMessages.length > 0) {
+    let summary: string;
+
+    if (droppedMessages.length >= COMPACTION_THRESHOLD) {
+      // Enough dropped messages to warrant an LLM summary
+      try {
+        summary = await compactMessages(droppedMessages);
+      } catch (err) {
+        console.log(`[compaction] Failed to summarize, using simple truncation: ${err}`);
+        summary = `[${droppedMessages.length} earlier messages were truncated. The conversation covered various topics.]`;
+      }
+    } else {
+      summary = `[${droppedMessages.length} earlier messages were truncated to fit context window.]`;
+    }
+
+    result.unshift({ role: "system" as any, content: summary });
   }
 
   return result;
+}
+
+async function compactMessages(
+  messages: { role: string; contentStr: string }[]
+): Promise<string> {
+  const { generateText } = await import("ai");
+  const { google } = await import("@ai-sdk/google");
+
+  // Build a condensed transcript for summarization (cap at ~50k chars to stay reasonable)
+  const transcript = messages
+    .map((m) => `${m.role}: ${m.contentStr.slice(0, 500)}`)
+    .join("\n")
+    .slice(0, 50_000);
+
+  const { text } = await generateText({
+    model: google(MODELS.FAST),
+    maxOutputTokens: 1000,
+    prompt: `Summarize the following conversation history into a concise recap. Focus on:
+- Key topics discussed
+- Important decisions or conclusions reached
+- Any action items, preferences, or instructions the user gave
+- Technical context that would be needed to continue the conversation
+
+Keep it under 500 words. Write as a factual summary, not a conversation.
+
+Conversation:
+${transcript}`,
+  });
+
+  console.log(`[compaction] Summarized ${messages.length} messages into ${text.length} chars`);
+  return `[Summary of ${messages.length} earlier messages]\n${text}`;
 }
 
 export async function getSystemPromptStep(): Promise<string> {

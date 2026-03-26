@@ -15,6 +15,7 @@ import { sendStatusStep } from "../steps/send-status";
 import { updateMemoryStep, updateSoulStep, readMemoryFileStep, readSoulFileStep } from "../steps/memory";
 import { logMessageStep } from "../steps/log-message";
 import { createScheduleStep, listSchedulesStep, deleteScheduleStep } from "../steps/schedule";
+import { spawnTaskStep } from "../steps/spawn-task";
 import {
   findOrCreateConversationStep,
   getConversationHistoryStep,
@@ -132,6 +133,24 @@ After calling this tool, confirm to the user with the schedule details (name, wh
             scheduleId: z.string().describe("The UUID of the schedule to delete"),
           }),
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
+        }),
+        spawnTask: tool({
+          description: `Spawn an independent task that runs in its own conversation. Use this for long-running or complex tasks that shouldn't block the current conversation. The task runs asynchronously — you get back a confirmation immediately, and the result is delivered to the user's chat when done.
+
+Examples of when to use:
+- "Research X and send me a summary" (could take many tool calls)
+- "Analyze this codebase and report back"
+- "Run these 5 scripts and compile the results"
+- Any task you estimate will take many steps or significant time
+
+Do NOT use for quick tasks that can be done in the current conversation.`,
+          inputSchema: z.object({
+            taskPrompt: z.string().describe("Complete, self-contained prompt for the task. Include all necessary context — the spawned task has NO access to the current conversation history."),
+          }),
+          execute: async ({ taskPrompt }) => {
+            log(`spawnTask: "${taskPrompt.slice(0, 80)}"`);
+            return spawnTaskStep(taskPrompt, platform, channelId);
+          },
         }),
         updateMemory: tool({
           description: 'Update the persistent memory file (~/.dispatch/memories.md). A sub-agent will intelligently merge your instruction into the existing memories — resolving contradictions, updating existing entries, or adding new ones. Use for "remember that...", "from now on...", "always do X", "stop doing Y".',
