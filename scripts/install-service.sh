@@ -88,14 +88,14 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$PROJECT_DIR/packages/backend
 EnvironmentFile=$ENV_FILE
-ExecStart=$NODE_BIN .output/server/index.mjs
+ExecStart=$PNPM_BIN run dev
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
-# Give it time to connect to Telegram/Slack
-TimeoutStartSec=30
+# Workflow compiler + Telegram/Slack init takes time
+TimeoutStartSec=60
 
 [Install]
 WantedBy=default.target
