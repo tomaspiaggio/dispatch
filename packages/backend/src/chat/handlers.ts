@@ -2,9 +2,9 @@ import { start } from "workflow/api";
 import { bot } from "./bot";
 import { startSlackSocketMode } from "./slack-socket";
 import { handleMessageWorkflow } from "../workflows/handle-message";
-import { prisma } from "../lib/prisma";
 import { google } from "@ai-sdk/google";
 import { generateText } from "ai";
+import { waitAndPostResponse, waitForConversation } from "./poll-response";
 
 import { MODELS } from "@dispatch/shared";
 
@@ -69,61 +69,6 @@ async function safeSend(thread: any, text: string) {
   }
 }
 
-async function waitForConversation(platform: string, channelId: string, maxWait = 15000) {
-  const deadline = Date.now() + maxWait;
-  while (Date.now() < deadline) {
-    const conv = await prisma.conversation.findFirst({
-      where: { platform, channelId },
-      orderBy: { createdAt: "desc" },
-    });
-    if (conv) return conv;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return null;
-}
-
-async function waitAndPostResponse(
-  thread: any,
-  conversationId: string,
-  startTime: Date
-) {
-  const maxWait = 120_000;
-  const pollInterval = 2000;
-  const postedIds = new Set<string>();
-
-  log(`Polling for response on ${conversationId}...`);
-
-  const deadline = Date.now() + maxWait;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollInterval));
-
-    const msgs = await prisma.message.findMany({
-      where: {
-        conversationId,
-        role: { in: ["assistant", "status"] },
-        createdAt: { gt: startTime },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-
-    for (const msg of msgs) {
-      if (postedIds.has(msg.id) || !msg.content) continue;
-      postedIds.add(msg.id);
-      log(`Posting [${msg.role}]: ${msg.content.slice(0, 80)}...`);
-      await safeSend(thread, msg.content);
-    }
-
-    if (msgs.some((m) => m.role === "assistant" && postedIds.has(m.id))) {
-      log(`Response delivered`);
-      return;
-    }
-  }
-
-  // TIMEOUT — always tell the user
-  log(`TIMEOUT on ${conversationId}`);
-  await safeSend(thread, "Sorry, I timed out waiting for a response. The task might still be running in the background — check back in a bit.");
-}
-
 async function handleIncomingMessage(thread: any, isNew: boolean) {
   const lastMessage = thread.recentMessages[thread.recentMessages.length - 1];
   if (!lastMessage) return;
@@ -174,7 +119,7 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
 
     // Start workflow
     log(`Starting workflow...`);
-    await start(handleMessageWorkflow, [
+    const run = await start(handleMessageWorkflow, [
       JSON.stringify(thread),
       typeof content === "string" ? content : JSON.stringify(content),
       adapterName,
@@ -184,11 +129,21 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
 
     // Wait for conversation, then poll for response
     log(`Waiting for conversation...`);
-    const conv = await waitForConversation(adapterName, channelId);
+    const conv = await waitForConversation(adapterName, channelId, thread.id ?? null);
 
     if (conv) {
       log(`Found conversation: ${conv.id}`);
-      await waitAndPostResponse(thread, conv.id, startTime);
+      await waitAndPostResponse({
+        conversationId: conv.id,
+        startTime,
+        run,
+        log,
+        timeoutMessage:
+          "Sorry, I timed out waiting for a response. The task might still be running in the background — check back in a bit.",
+        deliverMessage: async ({ content }) => {
+          await safeSend(thread, content);
+        },
+      });
     } else {
       log(`No conversation found`);
       await safeSend(thread, "Something went wrong: couldn't create conversation. Check the logs.");
