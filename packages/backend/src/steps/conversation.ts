@@ -8,7 +8,7 @@ function estimateTokens(text: string): number {
 }
 
 const MAX_HISTORY_TOKENS = 400_000; // Leave room for system prompt + tools + response
-const MAX_HISTORY_MESSAGES = 20; // Compact after this many messages regardless of tokens
+const MAX_HISTORY_MESSAGES = 40; // Keep this many recent messages, compact the rest
 
 export async function findOrCreateConversationStep(
   platform: string,
