@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",
-    "build": "tsup src/cli.tsx --format esm --outDir dist --dts",
+    "build": "tsup",
     "start": "node dist/cli.js"
   },
   "dependencies": {

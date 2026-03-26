@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import Spinner from "ink-spinner";
-import { trpc } from "./trpc.js";
+import { trpc } from "./trpc";
 
 function ts(dateStr: string) {
   return new Date(dateStr).toLocaleTimeString([], {
