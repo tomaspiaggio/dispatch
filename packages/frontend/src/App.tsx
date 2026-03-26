@@ -2,10 +2,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import Spinner from "ink-spinner";
-import { getConversations, getConversation, sendMessage } from "./api.js";
-import type { Message, Conversation } from "@dispatch/shared";
+import { trpc } from "./trpc.js";
 
-// Format timestamp
 function ts(dateStr: string) {
   return new Date(dateStr).toLocaleTimeString([], {
     hour: "2-digit",
@@ -13,8 +11,7 @@ function ts(dateStr: string) {
   });
 }
 
-// Render a single message
-function MessageLine({ msg }: { msg: Message }) {
+function MessageLine({ msg }: { msg: any }) {
   if (msg.role === "status") {
     return (
       <Text dimColor italic>
@@ -30,7 +27,8 @@ function MessageLine({ msg }: { msg: Message }) {
       <Box flexDirection="column">
         {calls.map((tc: any, i: number) => (
           <Text key={i} dimColor>
-            {"  "}🔧 {tc.name ?? tc.toolName}({JSON.stringify(tc.args ?? tc.input ?? {}).slice(0, 80)})
+            {"  "}🔧 {tc.name ?? tc.toolName}(
+            {JSON.stringify(tc.args ?? tc.input ?? {}).slice(0, 80)})
             {tc.status === "error" ? " ❌" : " ✓"}
           </Text>
         ))}
@@ -48,44 +46,16 @@ function MessageLine({ msg }: { msg: Message }) {
         <Text bold color={isUser ? "cyan" : "green"}>
           {isUser ? "You" : "Dispatch"}
         </Text>
-        <Text dimColor> {ts(msg.createdAt)}{tokenStr}</Text>
+        <Text dimColor>
+          {" "}
+          {ts(msg.createdAt)}
+          {tokenStr}
+        </Text>
       </Box>
-      <Text wrap="wrap">{"  "}{msg.content ?? ""}</Text>
-    </Box>
-  );
-}
-
-// Conversation list sidebar
-function ConversationList({
-  conversations,
-  selected,
-  onSelect,
-}: {
-  conversations: Conversation[];
-  selected: string | null;
-  onSelect: (id: string) => void;
-}) {
-  if (conversations.length === 0) {
-    return <Text dimColor>No conversations yet</Text>;
-  }
-
-  return (
-    <Box flexDirection="column">
-      {conversations.slice(0, 15).map((c) => {
-        const active = c.id === selected;
-        const icon = c.platform === "telegram" ? "@" : c.platform === "slack" ? "#" : ">";
-        const label = c.title ?? `${c.platform}`;
-        return (
-          <Text
-            key={c.id}
-            bold={active}
-            color={active ? "cyan" : undefined}
-            dimColor={!active}
-          >
-            {active ? "▸" : " "} {icon} {label}
-          </Text>
-        );
-      })}
+      <Text wrap="wrap">
+        {"  "}
+        {msg.content ?? ""}
+      </Text>
     </Box>
   );
 }
@@ -96,57 +66,40 @@ export default function App() {
   const termHeight = stdout?.rows ?? 24;
 
   const [mode, setMode] = useState<"chat" | "list">("chat");
-  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [listIdx, setListIdx] = useState(0);
 
-  // Load conversations
-  const loadConversations = useCallback(async () => {
-    try {
-      const data = await getConversations();
-      setConversations(data.conversations ?? []);
-    } catch {}
-  }, []);
+  // tRPC queries
+  const conversationsQuery = trpc.listConversations.useQuery(undefined, {
+    refetchInterval: 5000,
+  });
 
-  // Load messages for current conversation
-  const loadMessages = useCallback(async () => {
-    if (!conversationId) return;
-    try {
-      const data = await getConversation(conversationId);
-      setMessages(data.messages ?? []);
-    } catch {}
-  }, [conversationId]);
+  const conversationQuery = trpc.getConversation.useQuery(
+    { id: conversationId! },
+    {
+      enabled: !!conversationId,
+      refetchInterval: 2000,
+    }
+  );
 
-  // Initial load + polling
-  useEffect(() => {
-    loadConversations();
-    const i = setInterval(loadConversations, 5000);
-    return () => clearInterval(i);
-  }, [loadConversations]);
+  const sendMutation = trpc.sendMessage.useMutation();
 
-  useEffect(() => {
-    loadMessages();
-    const i = setInterval(loadMessages, 2000);
-    return () => clearInterval(i);
-  }, [loadMessages]);
+  const conversations = conversationsQuery.data ?? [];
+  const messages = conversationQuery.data?.messages ?? [];
 
-  // Handle sending
   const handleSubmit = useCallback(
     async (value: string) => {
       const text = value.trim();
       if (!text) return;
 
-      // Commands
       if (text === "/quit" || text === "/exit") {
         exit();
         return;
       }
       if (text === "/new") {
         setConversationId(null);
-        setMessages([]);
         setInput("");
         return;
       }
@@ -159,41 +112,32 @@ export default function App() {
       setSending(true);
       setInput("");
       try {
-        const result = await sendMessage(text, conversationId ?? undefined);
+        const result = await sendMutation.mutateAsync({
+          content: text,
+          conversationId: conversationId ?? undefined,
+        });
         if (!conversationId) {
           setConversationId(result.conversationId);
         }
       } catch (err: any) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            conversationId: conversationId ?? "",
-            role: "status",
-            content: `Error: ${err.message}`,
-            toolCalls: [],
-            thinking: null,
-            tokensUsed: null,
-            createdAt: new Date().toISOString(),
-          },
-        ]);
+        // Error shown inline — React Query handles this
       } finally {
         setSending(false);
       }
     },
-    [conversationId, exit]
+    [conversationId, exit, sendMutation]
   );
 
-  // Keyboard shortcuts
-  useInput((ch, key) => {
+  useInput((ch: string, key: any) => {
     if (key.ctrl && ch === "c") {
       exit();
       return;
     }
 
     if (mode === "list") {
-      if (key.upArrow) setListIdx((i) => Math.max(0, i - 1));
-      if (key.downArrow) setListIdx((i) => Math.min(conversations.length - 1, i + 1));
+      if (key.upArrow) setListIdx((i: number) => Math.max(0, i - 1));
+      if (key.downArrow)
+        setListIdx((i: number) => Math.min(conversations.length - 1, i + 1));
       if (key.return) {
         const c = conversations[listIdx];
         if (c) {
@@ -210,19 +154,35 @@ export default function App() {
     return (
       <Box flexDirection="column" height={termHeight}>
         <Box borderStyle="single" borderColor="cyan" paddingX={1}>
-          <Text bold color="cyan">Dispatch</Text>
-          <Text dimColor> — conversations (↑↓ select, Enter open, Esc back)</Text>
+          <Text bold color="cyan">
+            Dispatch
+          </Text>
+          <Text dimColor>
+            {" "}
+            — conversations (↑↓ select, Enter open, Esc back)
+          </Text>
         </Box>
         <Box flexDirection="column" paddingX={1} flexGrow={1}>
           {conversations.length === 0 ? (
-            <Text dimColor>No conversations yet. Start typing!</Text>
+            <Text dimColor>No conversations yet.</Text>
           ) : (
-            conversations.slice(0, termHeight - 4).map((c, i) => {
+            conversations.slice(0, termHeight - 4).map((c: any, i: number) => {
               const active = i === listIdx;
-              const icon = c.platform === "telegram" ? "@" : c.platform === "slack" ? "#" : ">";
+              const icon =
+                c.platform === "telegram"
+                  ? "@"
+                  : c.platform === "slack"
+                    ? "#"
+                    : ">";
               return (
-                <Text key={c.id} bold={active} color={active ? "cyan" : undefined} dimColor={!active}>
-                  {active ? "▸ " : "  "}{icon} {c.title ?? c.platform} — {c.channelId?.slice(0, 12)}
+                <Text
+                  key={c.id}
+                  bold={active}
+                  color={active ? "cyan" : undefined}
+                  dimColor={!active}
+                >
+                  {active ? "▸ " : "  "}
+                  {icon} {c.title ?? c.platform} — {c.channelId?.slice(0, 12)}
                 </Text>
               );
             })
@@ -237,39 +197,67 @@ export default function App() {
 
   return (
     <Box flexDirection="column" height={termHeight}>
-      {/* Header */}
-      <Box borderStyle="single" borderColor="cyan" paddingX={1} justifyContent="space-between">
+      <Box
+        borderStyle="single"
+        borderColor="cyan"
+        paddingX={1}
+        justifyContent="space-between"
+      >
         <Box>
-          <Text bold color="cyan">Dispatch</Text>
+          <Text bold color="cyan">
+            Dispatch
+          </Text>
           {conversationId ? (
-            <Text dimColor> — {conversations.find((c) => c.id === conversationId)?.platform ?? "web"}</Text>
+            <Text dimColor>
+              {" "}
+              —{" "}
+              {conversations.find((c: any) => c.id === conversationId)
+                ?.platform ?? "web"}
+            </Text>
           ) : (
             <Text dimColor> — new conversation</Text>
           )}
         </Box>
-        <Text dimColor>{messages.length} msgs | /list /new /quit</Text>
+        <Text dimColor>
+          {messages.length} msgs | /list /new /quit
+        </Text>
       </Box>
 
-      {/* Messages */}
-      <Box flexDirection="column" flexGrow={1} paddingX={1} overflowY="hidden">
+      <Box
+        flexDirection="column"
+        flexGrow={1}
+        paddingX={1}
+        overflowY="hidden"
+      >
         {visibleMessages.length === 0 && !sending && (
           <Box flexGrow={1} justifyContent="center" alignItems="center">
             <Text dimColor>Start typing to chat with Dispatch</Text>
           </Box>
         )}
-        {visibleMessages.map((msg) => (
+        {visibleMessages.map((msg: any) => (
           <MessageLine key={msg.id} msg={msg} />
         ))}
         {sending && (
           <Text dimColor>
-            {"  "}<Spinner type="dots" /> Thinking...
+            {"  "}
+            <Spinner type="dots" /> Thinking...
+          </Text>
+        )}
+        {sendMutation.error && (
+          <Text color="red">
+            {"  "}Error: {sendMutation.error.message}
           </Text>
         )}
       </Box>
 
-      {/* Input */}
-      <Box borderStyle="single" borderColor={sending ? "yellow" : "white"} paddingX={1}>
-        <Text bold color="cyan">{">"} </Text>
+      <Box
+        borderStyle="single"
+        borderColor={sending ? "yellow" : "white"}
+        paddingX={1}
+      >
+        <Text bold color="cyan">
+          {">"}{" "}
+        </Text>
         <TextInput
           value={input}
           onChange={setInput}
