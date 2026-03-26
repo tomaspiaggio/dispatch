@@ -1,0 +1,44 @@
+{
+  "name": "@dispatch/backend",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env -- nitro dev",
+    "build": "nitro build",
+    "start": "dotenv -e ../../.env -- node .output/server/index.mjs",
+    "prisma": "prisma",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.53",
+    "@chat-adapter/state-redis": "4.22.0",
+    "@chat-adapter/telegram": "4.22.0",
+    "@dispatch/shared": "workspace:*",
+    "@prisma/adapter-pg": "^7.5.0",
+    "@prisma/client": "^7.0.0",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.0",
+    "@workflow/ai": "4.1.0-beta.58",
+    "@workflow/world-postgres": "4.1.0-beta.47",
+    "ai": "^6.0.138",
+    "chat": "4.22.0",
+    "dotenv": "^17.3.1",
+    "hono": "^4.7.0",
+    "nitro": "3.0.260311-beta",
+    "rollup": "^4.60.0",
+    "workflow": "4.2.0-beta.72",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.13.0",
+    "@types/node": "^22.0.0",
+    "dotenv-cli": "^11.0.0",
+    "prisma": "^7.0.0",
+    "testcontainers": "^11.13.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.1"
+  }
+}

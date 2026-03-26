@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Conversation {
+  id        String    @id @default(uuid())
+  platform  String
+  channelId String    @map("channel_id")
+  threadId  String?   @map("thread_id")
+  title     String?
+  messages  Message[]
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@unique([platform, channelId, threadId])
+  @@index([platform])
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  conversationId String       @map("conversation_id")
+  role           String
+  content        String?
+  toolCalls      Json         @default("[]") @map("tool_calls")
+  thinking       String?
+  tokensUsed     Json?        @map("tokens_used")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([conversationId])
+  @@map("messages")
+}
