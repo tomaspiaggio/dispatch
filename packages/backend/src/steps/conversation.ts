@@ -8,7 +8,7 @@ function estimateTokens(text: string): number {
 }
 
 const MAX_HISTORY_TOKENS = 400_000; // Leave room for system prompt + tools + response
-const COMPACTION_THRESHOLD = 30; // Only compact when we have this many messages to summarize
+const MAX_HISTORY_MESSAGES = 20; // Compact after this many messages regardless of tokens
 
 export async function findOrCreateConversationStep(
   platform: string,
@@ -73,15 +73,21 @@ export async function getConversationHistoryStep(
     parsed.push({ role: m.role, content, contentStr, tokens: estimateTokens(contentStr) });
   }
 
-  // Find how many recent messages fit in the budget (iterate from end)
+  // Find split point: keep at most MAX_HISTORY_MESSAGES recent messages
+  // AND stay within token budget
   let tokenCount = 0;
-  let splitIdx = 0; // everything before this index gets compacted
+  let splitIdx = 0;
+  let keptCount = 0;
   for (let i = parsed.length - 1; i >= 0; i--) {
-    if (tokenCount + parsed[i].tokens > MAX_HISTORY_TOKENS) {
+    const wouldExceedTokens = tokenCount + parsed[i].tokens > MAX_HISTORY_TOKENS;
+    const wouldExceedMessages = keptCount >= MAX_HISTORY_MESSAGES;
+
+    if ((wouldExceedTokens || wouldExceedMessages) && keptCount > 0) {
       splitIdx = i + 1;
       break;
     }
     tokenCount += parsed[i].tokens;
+    keptCount++;
   }
 
   const recentMessages = parsed.slice(splitIdx);
@@ -92,20 +98,28 @@ export async function getConversationHistoryStep(
     content: m.content as any,
   }));
 
-  // If we dropped messages, summarize them instead of just discarding
+  // If we dropped messages, summarize them with LLM and notify the user
   if (droppedMessages.length > 0) {
-    let summary: string;
+    const reason = keptCount >= MAX_HISTORY_MESSAGES ? "message limit" : "token limit";
+    console.log(`[compaction] Compacting ${droppedMessages.length} messages (${reason}), keeping ${recentMessages.length}`);
 
-    if (droppedMessages.length >= COMPACTION_THRESHOLD) {
-      // Enough dropped messages to warrant an LLM summary
-      try {
-        summary = await compactMessages(droppedMessages);
-      } catch (err) {
-        console.log(`[compaction] Failed to summarize, using simple truncation: ${err}`);
-        summary = `[${droppedMessages.length} earlier messages were truncated. The conversation covered various topics.]`;
-      }
-    } else {
-      summary = `[${droppedMessages.length} earlier messages were truncated to fit context window.]`;
+    // Notify the user that compaction is happening (use assistant role so it's delivered to chat)
+    const { broadcastToConversation } = await import("../lib/ws");
+    const statusMsg = await prisma.message.create({
+      data: {
+        conversationId,
+        role: "assistant",
+        content: `📝 Compacting conversation — summarizing ${droppedMessages.length} older messages to keep context manageable. Recent messages are preserved.`,
+      },
+    });
+    broadcastToConversation(conversationId, "new_message", statusMsg);
+
+    let summary: string;
+    try {
+      summary = await compactMessages(droppedMessages);
+    } catch (err) {
+      console.log(`[compaction] Failed to summarize: ${err}`);
+      summary = `[${droppedMessages.length} earlier messages were compacted. The conversation covered various topics.]`;
     }
 
     result.unshift({ role: "system" as any, content: summary });
