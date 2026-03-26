@@ -16,26 +16,20 @@ function log(msg: string, data?: any) {
   }
 }
 
-// Check if user is allowed
-function isAllowed(userId: string): boolean {
-  const allowedRaw = process.env.ALLOWED_USER_IDS;
-  if (!allowedRaw) return true;
-  return allowedRaw.split(",").map((id) => id.trim()).includes(userId);
-}
-
-// Post a markdown-formatted message to Slack
 async function postMessage(channel: string, text: string, threadTs?: string) {
   if (!webClient) return;
-  await webClient.chat.postMessage({
-    channel,
-    text, // Fallback
-    mrkdwn: true,
-    blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
-    ...(threadTs ? { thread_ts: threadTs } : {}),
-  });
+  try {
+    await webClient.chat.postMessage({
+      channel,
+      text,
+      mrkdwn: true,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    });
+  } catch (err) {
+    log(`postMessage failed: ${err}`);
+  }
 }
 
-// Poll DB for response and post to Slack
 async function waitAndPostResponse(
   channel: string,
   conversationId: string,
@@ -62,14 +56,9 @@ async function waitAndPostResponse(
     for (const msg of msgs) {
       if (postedIds.has(msg.id) || !msg.content) continue;
       postedIds.add(msg.id);
-
       log(`Posting: [${msg.role}] ${msg.content.slice(0, 80)}...`);
-      try {
-        const text = msg.role === "status" ? `_${msg.content}_` : msg.content;
-        await postMessage(channel, text, threadTs);
-      } catch (err) {
-        log(`Failed to post: ${err}`);
-      }
+      const text = msg.role === "status" ? `_${msg.content}_` : msg.content;
+      await postMessage(channel, text, threadTs);
     }
 
     if (msgs.some((m) => m.role === "assistant" && postedIds.has(m.id))) {
@@ -78,14 +67,35 @@ async function waitAndPostResponse(
     }
   }
 
-  log(`TIMEOUT waiting for response`);
-  try {
-    await postMessage(channel, "Sorry, I timed out waiting for a response. The task might still be running — check back in a bit.", threadTs);
-  } catch {}
+  log(`TIMEOUT`);
+  await postMessage(channel, "Sorry, I timed out. The task might still be running.", threadTs);
 }
 
-const ACKS = ["Working on it...", "Let me check...", "On it...", "Looking into it...", "Give me a sec..."];
-function randomAck() { return ACKS[Math.floor(Math.random() * ACKS.length)]!; }
+import { google } from "@ai-sdk/google";
+import { generateText } from "ai";
+import { MODELS } from "@dispatch/shared";
+
+async function generateAck(userMessage: string): Promise<string> {
+  try {
+    const { text } = await generateText({
+      model: google(MODELS.FAST),
+      maxOutputTokens: 40,
+      prompt: `You're an AI assistant that just received a message. Generate a very short (5-15 words max) contextual acknowledgment. Be natural and casual. Don't answer the question — just acknowledge you're going to work on it.
+
+Examples:
+- "hello" → "Hey! What can I do for you?"
+- "what's the weather" → "Checking the weather for you..."
+- "deploy the app" → "On it, deploying now..."
+
+User message: "${userMessage.slice(0, 200)}"
+
+Your short acknowledgment:`,
+    });
+    return text.trim() || "On it...";
+  } catch {
+    return "On it...";
+  }
+}
 
 export async function startSlackSocketMode() {
   const appToken = process.env.SLACK_APP_TOKEN;
@@ -98,99 +108,98 @@ export async function startSlackSocketMode() {
   socketClient = new SocketModeClient({ appToken });
   webClient = new WebClient(botToken);
 
-  // Get our bot user ID so we can detect mentions
   let botUserId = "";
+  let botId = "";
   try {
     const auth = await webClient.auth.test();
     botUserId = auth.user_id as string;
-    log(`Connected as bot user: ${botUserId}`);
+    botId = auth.bot_id as string ?? "";
+    log(`Bot user: ${botUserId}, bot_id: ${botId}`);
   } catch (err) {
     log(`Failed to get bot info: ${err}`);
   }
 
+  // Deduplicate: track processed event timestamps
+  const processedEvents = new Set<string>();
+
+  function shouldProcess(event: any): boolean {
+    // Skip bot's own messages
+    if (event.user === botUserId) return false;
+    if (event.bot_id) return false;
+    if (event.bot_profile) return false;
+
+    // Skip subtypes (joins, leaves, edits, etc.)
+    if (event.subtype) return false;
+
+    // Must have text
+    if (!event.text) return false;
+
+    // Deduplicate by event timestamp
+    const key = `${event.channel}:${event.ts}`;
+    if (processedEvents.has(key)) return false;
+    processedEvents.add(key);
+
+    // Clean up old entries (keep last 100)
+    if (processedEvents.size > 100) {
+      const arr = Array.from(processedEvents);
+      for (let i = 0; i < arr.length - 100; i++) {
+        processedEvents.delete(arr[i]!);
+      }
+    }
+
+    return true;
+  }
+
+  // Slash commands
   socketClient.on("slash_commands", async ({ body, ack }: any) => {
     await ack();
-    const command = body.command;
-    const userId = body.user_id;
-    const channelId = body.channel_id;
+    log(`Slash: ${body.command}`, { user: body.user_id, channel: body.channel_id, text: body.text });
 
-    log(`Slash command: ${command}`, { userId, channelId });
-
-    if (!isAllowed(userId)) {
-      log(`BLOCKED: ${userId}`);
+    if (body.command === "/new") {
+      await postMessage(body.channel_id, "Fresh start!");
       return;
     }
 
-    if (command === "/new") {
-      await postMessage(channelId, "Fresh start! Send me a message to begin a new conversation.");
-      return;
-    }
-
-    if (command === "/dispatch") {
-      const text = body.text ?? "";
+    if (body.command === "/dispatch") {
+      const text = body.text?.trim();
       if (!text) {
-        await postMessage(channelId, "Usage: `/dispatch <message>`");
+        await postMessage(body.channel_id, "Usage: `/dispatch <message>`");
         return;
       }
-      // Treat as a new message
-      await handleSlackMessage(channelId, userId, text);
+      await handleSlackMessage(body.channel_id, text);
     }
   });
 
-  socketClient.on("slack_event", async ({ event, body, ack }: any) => {
-    await ack();
-
+  // Use ONLY slack_event — this is the canonical event listener for Socket Mode
+  socketClient.on("slack_event", async ({ event, ack }: any) => {
+    if (ack) await ack();
     if (!event) return;
 
-    // Handle message events
-    if (event.type === "message" && !event.subtype && event.text) {
-      const userId = event.user;
-      const channelId = event.channel;
-      const threadTs = event.thread_ts ?? event.ts; // Thread or top-level
-      const isThread = !!event.thread_ts;
+    // Log all events for debugging
+    log(`Event: ${event.type}`, {
+      user: event.user,
+      channel: event.channel,
+      subtype: event.subtype,
+      bot_id: event.bot_id,
+      thread_ts: event.thread_ts,
+      ts: event.ts,
+      text: event.text?.slice(0, 80),
+    });
 
-      // Ignore bot's own messages
-      if (userId === botUserId) return;
+    if (!shouldProcess(event)) return;
 
-      if (!isAllowed(userId)) {
-        log(`BLOCKED: ${userId}`);
-        return;
-      }
-
-      log(`Message from ${userId} in ${channelId}`, {
-        text: event.text.slice(0, 120),
-        isThread,
-        threadTs,
-      });
-
-      await handleSlackMessage(channelId, userId, event.text, threadTs);
-    }
-
-    // Handle app_mention events (when someone @mentions the bot)
-    if (event.type === "app_mention" && event.text) {
-      const userId = event.user;
-      const channelId = event.channel;
-      const threadTs = event.thread_ts ?? event.ts;
-      const isThread = !!event.thread_ts;
-
-      if (userId === botUserId) return;
-      if (!isAllowed(userId)) {
-        log(`BLOCKED: ${userId}`);
-        return;
-      }
-
-      // Strip the bot mention from the text
-      const text = event.text.replace(/<@[A-Z0-9]+>/g, "").trim();
+    // app_mention or message — handle both the same way
+    if (event.type === "app_mention" || event.type === "message") {
+      const text = event.text.replace(/<@[A-Z0-9]+>/gi, "").trim();
       if (!text) return;
-
-      log(`Mention from ${userId}: "${text.slice(0, 120)}"`, { isThread });
-      await handleSlackMessage(channelId, userId, text, threadTs);
+      const threadTs = event.thread_ts ?? event.ts;
+      log(`Processing: "${text.slice(0, 120)}"`, { channel: event.channel, threadTs });
+      await handleSlackMessage(event.channel, text, threadTs);
     }
   });
 
-  socketClient.on("interactive", async ({ body, ack }: any) => {
-    await ack();
-    log(`Interactive event`, { type: body?.type });
+  socketClient.on("interactive", async ({ ack }: any) => {
+    if (ack) await ack();
   });
 
   await socketClient.start();
@@ -199,19 +208,19 @@ export async function startSlackSocketMode() {
 
 async function handleSlackMessage(
   channelId: string,
-  _userId: string,
   text: string,
   threadTs?: string,
 ) {
   const startTime = new Date();
 
   try {
-    // Ack
-    await postMessage(channelId, randomAck(), threadTs);
+    const ack = await generateAck(text);
+    log(`Ack: "${ack}"`);
+    await postMessage(channelId, ack, threadTs);
 
     const conversationThreadId = threadTs ?? `slack-${channelId}-${Date.now()}`;
 
-    log(`Starting workflow`, { channelId, threadId: conversationThreadId });
+    log(`Workflow start`, { channelId, threadId: conversationThreadId });
     await start(handleMessageWorkflow, [
       null,
       text,
@@ -220,7 +229,7 @@ async function handleSlackMessage(
       conversationThreadId,
     ]);
 
-    // Wait for conversation to be created by workflow
+    // Wait for conversation
     const deadline = Date.now() + 15_000;
     let conv = null;
     while (Date.now() < deadline) {
@@ -235,14 +244,12 @@ async function handleSlackMessage(
     if (conv) {
       await waitAndPostResponse(channelId, conv.id, startTime, threadTs);
     } else {
-      await postMessage(channelId, "Something went wrong: couldn't create conversation. Check the logs.", threadTs);
+      await postMessage(channelId, "Something went wrong: couldn't create conversation.", threadTs);
     }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    log(`!!! Slack handler error: ${msg}`);
-    try {
-      await postMessage(channelId, `Something went wrong: ${msg}`, threadTs);
-    } catch {}
+    log(`!!! Error: ${msg}`);
+    await postMessage(channelId, `Something went wrong: ${msg}`, threadTs);
   }
 }
 

@@ -4,7 +4,7 @@ import { google } from "@workflow/ai/google";
 import { tool } from "ai";
 import { z } from "zod";
 import type { UIMessageChunk } from "ai";
-import { MODEL_ID } from "@dispatch/shared";
+import { MODELS } from "@dispatch/shared";
 
 import { readFileStep } from "../steps/read-file";
 import { writeFileStep } from "../steps/write-file";
@@ -69,7 +69,7 @@ export async function handleMessageWorkflow(
     log(`System prompt: ${systemPrompt.length} chars`);
 
     const agent = new DurableAgent({
-      model: google(MODEL_ID) as any,
+      model: google(MODELS.AGENT) as any,
       instructions: systemPrompt,
       tools: {
         readFile: tool({
@@ -140,7 +140,7 @@ export async function handleMessageWorkflow(
             // Execute the delayed task with a fresh agent
             const freshPrompt = await getSystemPromptStep();
             const freshAgent = new DurableAgent({
-              model: google(MODEL_ID) as any,
+              model: google(MODELS.AGENT) as any,
               instructions: freshPrompt + "\n\nYou are executing a previously scheduled task. Complete it and respond with the result.",
               tools: {
                 bash: tool({

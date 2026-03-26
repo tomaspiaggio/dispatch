@@ -3,6 +3,10 @@ import { bot } from "./bot";
 import { startSlackSocketMode } from "./slack-socket";
 import { handleMessageWorkflow } from "../workflows/handle-message";
 import { prisma } from "../lib/prisma";
+import { google } from "@ai-sdk/google";
+import { generateText } from "ai";
+
+import { MODELS } from "@dispatch/shared";
 
 function log(msg: string, data?: any) {
   const ts = new Date().toISOString().slice(11, 23);
@@ -13,11 +17,36 @@ function log(msg: string, data?: any) {
   }
 }
 
-const ACKS = ["Working on it...", "Let me check...", "On it...", "Looking into it...", "Give me a sec..."];
-function randomAck() { return ACKS[Math.floor(Math.random() * ACKS.length)]!; }
+async function generateAck(userMessage: string): Promise<string> {
+  try {
+    const { text } = await generateText({
+      model: google(MODELS.FAST),
+      maxOutputTokens: 40,
+      prompt: `You're an AI assistant that just received a message. Generate a very short (5-15 words max) contextual acknowledgment. Be natural and casual. Don't answer the question — just acknowledge you're going to work on it.
 
+Examples:
+- "hello" → "Hey! What can I do for you?"
+- "what's the weather" → "Checking the weather for you..."
+- "deploy the app" → "On it, deploying now..."
+- "remember to always use pnpm" → "Got it, I'll remember that."
+- "can you read my config file" → "Sure, let me pull that up..."
+
+User message: "${userMessage.slice(0, 200)}"
+
+Your short acknowledgment:`,
+    });
+    return text.trim() || "On it...";
+  } catch {
+    return "On it...";
+  }
+}
+
+// Telegram bots are public — restrict to allowed IDs. Slack is org-level, allow all.
 function isAllowedUser(thread: any): boolean {
-  const allowedRaw = process.env.ALLOWED_USER_IDS;
+  const adapterName = thread.adapter?.name ?? "unknown";
+  if (adapterName !== "telegram") return true; // Slack/other: allow all
+
+  const allowedRaw = process.env.ALLOWED_TELEGRAM_IDS;
   if (!allowedRaw) return true;
   const allowedIds = allowedRaw.split(",").map((id) => id.trim());
   const authorId = thread.recentMessages?.[thread.recentMessages.length - 1]?.author?.id;
@@ -124,8 +153,10 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
   const startTime = new Date();
 
   try {
-    // Ack
-    await thread.post(randomAck());
+    // Fast contextual ack via flash-lite
+    const ack = await generateAck(messageText);
+    log(`Ack: "${ack}"`);
+    await thread.post(ack);
     try { await thread.startTyping(); } catch {}
 
     // Start workflow

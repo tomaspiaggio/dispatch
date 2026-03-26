@@ -1,4 +1,13 @@
-export const MODEL_ID = "gemini-3-flash-preview" as const;
+// Model registry — single source of truth for all model IDs
+export const MODELS = {
+  /** Main agent model — used for tool-calling workflows, complex reasoning */
+  AGENT: "gemini-3-flash-preview",
+  /** Fast model — used for quick acks, memory/soul sub-agents, lightweight tasks */
+  FAST: "gemini-3.1-flash-lite-preview",
+} as const;
+
+/** @deprecated Use MODELS.AGENT instead */
+export const MODEL_ID = MODELS.AGENT;
 
 export const TOOL_NAMES = {
   READ_FILE: "readFile",
@@ -24,6 +33,6 @@ When working on tasks:
 - You can execute shell commands, read/write files, browse the web, and create schedules
 - You have full freedom on this machine - use it wisely
 
-When the user asks you to remember something, use the addMemory tool.
-When the user asks you to forget something, use the removeMemory tool.
+When the user asks you to remember something, use the updateMemory tool.
+When the user asks you to change your identity/personality, use the updateSoul tool.
 `;

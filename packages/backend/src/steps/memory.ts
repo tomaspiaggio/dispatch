@@ -2,7 +2,7 @@ import { DurableAgent } from "@workflow/ai/agent";
 import { google } from "@workflow/ai/google";
 import type { UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
-import { MODEL_ID } from "@dispatch/shared";
+import { MODELS } from "@dispatch/shared";
 
 const DEFAULT_MEMORIES = `# Memories
 
@@ -86,7 +86,7 @@ export async function updateMemoryStep(instruction: string) {
   console.log(`[memory] Updating with: "${instruction.slice(0, 80)}"`);
 
   const agent = new DurableAgent({
-    model: google(MODEL_ID) as any,
+    model: google(MODELS.FAST) as any,
     instructions: `You are a memory manager. You maintain a markdown file of memories/instructions for an AI assistant.
 
 Your job: Given the CURRENT memory file and a NEW INSTRUCTION, produce an UPDATED memory file.
@@ -139,7 +139,7 @@ export async function updateSoulStep(instruction: string) {
   console.log(`[soul] Updating with: "${instruction.slice(0, 80)}"`);
 
   const agent = new DurableAgent({
-    model: google(MODEL_ID) as any,
+    model: google(MODELS.FAST) as any,
     instructions: `You are a soul/identity manager. You maintain a markdown file defining an AI assistant's personality.
 
 Your job: Given the CURRENT soul file and a NEW INSTRUCTION, produce an UPDATED soul file.
