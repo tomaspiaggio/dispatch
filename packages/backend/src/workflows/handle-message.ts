@@ -134,24 +134,13 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
-        spawnTask: tool({
-          description: `Spawn an independent background task. It runs in its own conversation and delivers the result to the user's chat when done. You get confirmation immediately — the current conversation is NOT blocked.
-
-YOU MUST USE THIS for any task that is NOT a quick back-and-forth. Specifically:
-- Coding tasks (writing code, scripts, configs)
-- Writing long documents or reports
-- Research tasks (searching the web, reading multiple files, analyzing data)
-- Running multiple commands and compiling results
-- Anything that would take more than 2-3 tool calls
-
-Only handle directly (without spawning) if it's a quick interactive question, a short answer, or a simple single-step action.
-
-After spawning, tell the user what you spawned and that the result will arrive shortly.`,
+        doTask: tool({
+          description: "Execute a task in the background. The result is delivered to the chat when done. This is the PREFERRED way to handle any user request that requires work (coding, research, file operations, web scraping, writing, running commands, etc). Only skip this tool for simple questions that need zero tool calls to answer.",
           inputSchema: z.object({
-            taskPrompt: z.string().describe("Complete, self-contained prompt for the task. Include ALL context needed — the spawned task has NO access to this conversation's history. Be detailed and specific."),
+            taskPrompt: z.string().describe("Complete self-contained prompt. Include ALL context — the background worker has no access to this conversation. Copy any relevant details, file paths, URLs, and requirements from the user's message."),
           }),
           execute: async ({ taskPrompt }) => {
-            log(`spawnTask: "${taskPrompt.slice(0, 80)}"`);
+            log(`doTask: "${taskPrompt.slice(0, 80)}"`);
             return spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
           },
         }),

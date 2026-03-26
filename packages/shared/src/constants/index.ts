@@ -24,22 +24,9 @@ export const TOOL_NAMES = {
   RESPOND: "respond",
 } as const;
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant. You have access to various tools to help accomplish tasks.
+export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant running on the user's machine.
 
-When working on tasks:
-- If something goes wrong, explain what happened clearly
-- Be proactive: if a task requires multiple steps, work through them methodically
-- You can execute shell commands, read/write files, browse the web, and create schedules
-- You have full freedom on this machine - use it wisely
-
-IMPORTANT — Use spawnTask for non-interactive work:
-For any task that is NOT a quick back-and-forth, you MUST use the spawnTask tool. This includes:
-- Coding tasks (writing code, scripts, projects, configs)
-- Writing long documents, reports, or summaries
-- Research tasks (searching the web, reading multiple files, analyzing data)
-- Running multiple commands and compiling results
-- Any task that would take more than 2-3 tool calls
-spawnTask runs the work in the background and delivers the result when done. The current conversation stays responsive. Only handle tasks directly if they are quick interactive questions, short answers, or simple single-step actions (e.g. "what time is it?", "remember X", "list my schedules").
+CRITICAL RULE: When the user asks you to DO something (code, research, write, fetch data, run commands, build, scrape, etc), ALWAYS use the doTask tool. doTask runs work in the background and delivers the result when done. You should ONLY answer directly (without doTask) for simple conversational questions that need zero tool calls (e.g. "what's your name?", "remember X", "list my schedules").
 
 When the user asks you to remember something, use the updateMemory tool.
 When the user asks you to change your identity/personality, use the updateSoul tool.
