@@ -1,4 +1,4 @@
-import { getWritable, sleep } from "workflow";
+import { getWritable } from "workflow";
 import { DurableAgent } from "@workflow/ai/agent";
 import { google } from "@workflow/ai/google";
 import { tool } from "ai";
@@ -14,6 +14,7 @@ import { runScriptStep } from "../steps/run-script";
 import { sendStatusStep } from "../steps/send-status";
 import { updateMemoryStep, updateSoulStep, readMemoryFileStep, readSoulFileStep } from "../steps/memory";
 import { logMessageStep } from "../steps/log-message";
+import { createScheduleStep, listSchedulesStep, deleteScheduleStep } from "../steps/schedule";
 import {
   findOrCreateConversationStep,
   getConversationHistoryStep,
@@ -27,20 +28,6 @@ function log(msg: string, data?: any) {
   } else {
     console.log(`[${ts}] [workflow] ${msg}`);
   }
-}
-
-function parseDelay(delay: string): number {
-  const match = delay.match(/^(\d+)\s*(s|sec|m|min|h|hr|hour|d|day)s?$/i);
-  if (!match) throw new Error(`Invalid delay: "${delay}". Use e.g. "30s", "5m", "1h", "2d"`);
-  const [, num, unit] = match;
-  const u = unit!.toLowerCase();
-  const multipliers: Record<string, number> = {
-    s: 1000, sec: 1000,
-    m: 60_000, min: 60_000,
-    h: 3600_000, hr: 3600_000, hour: 3600_000,
-    d: 86400_000, day: 86400_000,
-  };
-  return parseInt(num!) * multipliers[u]!;
 }
 
 export async function handleMessageWorkflow(
@@ -112,72 +99,39 @@ export async function handleMessageWorkflow(
           }),
           execute: async ({ scriptPath, args }) => { log(`runScript: ${scriptPath}`); return runScriptStep(scriptPath, args); },
         }),
-        scheduleDelayed: tool({
-          description: 'Sleep for a duration then execute a task. The workflow literally pauses (durably, survives restarts) and resumes after the delay. Use for "do X in 30 minutes", "remind me in 1 hour", "check Y tomorrow". Formats: "30s", "5m", "1h", "2d" or an ISO date string.',
+        createSchedule: tool({
+          description: `Schedule a task to run later. This tool SAVES the schedule to the database and returns immediately — the scheduler will execute it automatically. You must provide EITHER cronExpression (recurring) OR delay (one-time), not both.
+
+Examples:
+- "remind me in 30 minutes" → delay: "30m"
+- "every day at 8:30 AM" → cronExpression: "30 8 * * *"
+- "every Monday at 9 AM" → cronExpression: "0 9 * * 1"
+
+After calling this tool, confirm to the user with the schedule details (name, when it will run). Do NOT call any other scheduling tools — this one does everything.`,
           inputSchema: z.object({
-            delay: z.string().describe('Duration like "1m", "30m", "2h", "1d" or ISO date like "2026-03-26T10:00:00Z"'),
-            taskPrompt: z.string().describe("What to do after the delay"),
+            name: z.string().describe("Short human-readable name, e.g. 'Weather Reminder' or 'Daily HN Summary'"),
+            taskPrompt: z.string().describe("The full prompt the agent will execute when the schedule fires. Be specific — this runs in a fresh conversation with no prior context."),
+            cronExpression: z.string().optional().describe('Cron expression for RECURRING tasks. Format: "min hour dom month dow". E.g. "30 8 * * *" = daily at 8:30 AM. Server timezone is PDT/PST.'),
+            delay: z.string().optional().describe('One-time delay for single reminders. E.g. "2m", "30m", "2h", "1d". Cannot be combined with cronExpression.'),
           }),
-          execute: async ({ delay: delayStr, taskPrompt }) => {
-            log(`scheduleDelayed: delay="${delayStr}" task="${taskPrompt.slice(0, 80)}"`);
-
-            await sendStatusStep(threadJson, conversation.id, `Scheduled: "${taskPrompt.slice(0, 60)}..." — will execute after ${delayStr}`);
-
-            // Determine sleep target: duration string or ISO date
-            if (delayStr.includes("T") || delayStr.match(/^\d{4}-/)) {
-              const target = new Date(delayStr);
-              log(`Sleeping until ${target.toISOString()}`);
-              await sleep(target);
-            } else {
-              const ms = parseDelay(delayStr);
-              log(`Sleeping for ${ms}ms (${delayStr})`);
-              await sleep(ms);
-            }
-
-            log(`Woke up! Executing: ${taskPrompt.slice(0, 80)}`);
-            await sendStatusStep(threadJson, conversation.id, `Timer fired! Working on: "${taskPrompt.slice(0, 60)}..."`);
-
-            // Execute the delayed task with a fresh agent
-            const freshPrompt = await getSystemPromptStep();
-            const freshAgent = new DurableAgent({
-              model: google(MODELS.AGENT) as any,
-              instructions: freshPrompt + "\n\nYou are executing a previously scheduled task. Complete it and respond with the result.",
-              tools: {
-                bash: tool({
-                  description: "Execute a shell command.",
-                  inputSchema: z.object({ command: z.string() }),
-                  execute: async ({ command }) => { log(`[delayed] bash: ${command.slice(0, 80)}`); return bashStep(command); },
-                }),
-                webFetch: tool({
-                  description: "HTTP request.",
-                  inputSchema: z.object({ url: z.string(), method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).default("GET") }),
-                  execute: async ({ url, method }) => { log(`[delayed] webFetch: ${method} ${url}`); return webFetchStep(url, method); },
-                }),
-                readFile: tool({
-                  description: "Read a file.",
-                  inputSchema: z.object({ path: z.string() }),
-                  execute: async ({ path }) => readFileStep(path),
-                }),
-                writeFile: tool({
-                  description: "Write a file.",
-                  inputSchema: z.object({ path: z.string(), content: z.string() }),
-                  execute: async ({ path, content: c }) => writeFileStep(path, c),
-                }),
-              },
-            });
-
-            const dw = getWritable<UIMessageChunk>();
-            const dr = await freshAgent.stream({
-              messages: [{ role: "user" as const, content: taskPrompt }],
-              writable: dw,
-              maxSteps: 20,
-            });
-
-            const resultText = dr.steps[dr.steps.length - 1]?.text ?? "Task completed.";
-            await logMessageStep(conversation.id, "assistant", `[Scheduled task result]\n${resultText}`);
-            log(`Delayed task done: ${resultText.slice(0, 100)}`);
-            return { executed: true, result: resultText };
+          execute: async ({ name, taskPrompt, cronExpression, delay }) => {
+            log(`createSchedule: "${name}" cron=${cronExpression ?? "none"} delay=${delay ?? "none"}`);
+            return createScheduleStep(name, taskPrompt, platform, channelId, threadJson, cronExpression, delay);
           },
+        }),
+        listSchedules: tool({
+          description: "List all scheduled tasks from the database. Returns an array of schedules with their IDs, names, prompts, next run times, and status. Call this when the user asks to see their schedules or before deleting one.",
+          inputSchema: z.object({
+            status: z.string().optional().describe('Filter by status: "active", "paused", "completed". Omit to show all non-completed.'),
+          }),
+          execute: async ({ status }) => { log(`listSchedules`); return listSchedulesStep(status); },
+        }),
+        deleteSchedule: tool({
+          description: "Permanently delete a schedule by its ID. Call listSchedules first to find the ID if you don't have it.",
+          inputSchema: z.object({
+            scheduleId: z.string().describe("The UUID of the schedule to delete"),
+          }),
+          execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
         updateMemory: tool({
           description: 'Update the persistent memory file (~/.dispatch/memories.md). A sub-agent will intelligently merge your instruction into the existing memories — resolving contradictions, updating existing entries, or adding new ones. Use for "remember that...", "from now on...", "always do X", "stop doing Y".',

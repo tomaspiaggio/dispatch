@@ -35,15 +35,45 @@ app.all("/trpc/*", (c) => {
   });
 });
 
+// POST /api/prompt — external trigger for workflows (curl, cron, integrations)
+app.post("/api/prompt", async (c) => {
+  const body = await c.req.json<{
+    prompt: string;
+    platform?: string;
+    channelId?: string;
+    conversationId?: string;
+  }>();
+
+  if (!body.prompt) {
+    return c.json({ error: "prompt is required" }, 400);
+  }
+
+  const { executePromptAndDeliver } = await import("./chat/deliver");
+  const result = await executePromptAndDeliver(
+    body.prompt,
+    body.platform ?? "web",
+    body.channelId ?? "api",
+    body.conversationId,
+  );
+
+  return c.json(result);
+});
+
 // Other routes
 app.route("/webhooks", webhookRoutes);
 app.route("/sse", sseRoutes);
 
-// Lazy init chat to avoid pulling Node.js-only chat-sdk modules into workflow bundle
+// Lazy init chat + scheduler to avoid pulling Node.js-only modules into workflow bundle
 import("./chat/handlers")
   .then(({ initChat }) => initChat())
   .catch((err) => {
     console.error("Failed to initialize chat connections:", err);
+  });
+
+import("./scheduler")
+  .then(({ startScheduler }) => startScheduler())
+  .catch((err) => {
+    console.error("Failed to start scheduler:", err);
   });
 
 export default app;
