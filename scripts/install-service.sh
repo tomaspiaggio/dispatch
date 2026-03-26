@@ -48,16 +48,14 @@ echo ">>> Installing dependencies..."
 cd "$PROJECT_DIR"
 $PNPM_BIN install --frozen-lockfile
 
-# Step 2: Build
-echo ">>> Building shared package..."
-$PNPM_BIN --filter @dispatch/shared build
-
+# Step 2: Generate Prisma client + build everything via Turborepo
 echo ">>> Generating Prisma client..."
 cd "$PROJECT_DIR/packages/backend"
 npx prisma generate
 
-echo ">>> Building backend..."
-$PNPM_BIN run build
+echo ">>> Building all packages (via Turborepo)..."
+cd "$PROJECT_DIR"
+$PNPM_BIN build
 
 # Step 3: Start Docker containers (if not already running)
 echo ">>> Ensuring Docker containers are running..."
@@ -70,6 +68,10 @@ cd "$PROJECT_DIR/packages/backend"
 # Load env for DATABASE_URL
 set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
 npx prisma db push || echo "WARNING: prisma db push failed — DB might not be ready yet"
+
+echo ">>> Running workflow postgres migration..."
+cd "$PROJECT_DIR"
+$PNPM_BIN --filter @dispatch/backend exec workflow-postgres-setup || echo "WARNING: workflow-postgres-setup failed"
 
 # Step 5: Create systemd service
 echo ">>> Creating systemd user service..."
