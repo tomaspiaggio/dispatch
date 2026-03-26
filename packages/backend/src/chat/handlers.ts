@@ -143,6 +143,9 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
         deliverMessage: async ({ content }) => {
           await safeSend(thread, content);
         },
+        keepTyping: async () => {
+          try { await thread.startTyping(); } catch {}
+        },
       });
     } else {
       log(`No conversation found`);
