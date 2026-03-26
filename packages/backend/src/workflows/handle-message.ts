@@ -15,7 +15,7 @@ import { sendStatusStep } from "../steps/send-status";
 import { updateMemoryStep, updateSoulStep, readMemoryFileStep, readSoulFileStep } from "../steps/memory";
 import { logMessageStep } from "../steps/log-message";
 import { createScheduleStep, listSchedulesStep, deleteScheduleStep } from "../steps/schedule";
-import { spawnTaskStep } from "../steps/spawn-task";
+import { spawnTaskStep, listSpawnedTasksStep } from "../steps/spawn-task";
 import {
   findOrCreateConversationStep,
   getConversationHistoryStep,
@@ -135,22 +135,30 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
         spawnTask: tool({
-          description: `Spawn an independent task that runs in its own conversation. Use this for long-running or complex tasks that shouldn't block the current conversation. The task runs asynchronously — you get back a confirmation immediately, and the result is delivered to the user's chat when done.
+          description: `Spawn an independent background task. It runs in its own conversation and delivers the result to the user's chat when done. You get confirmation immediately — the current conversation is NOT blocked.
 
-Examples of when to use:
-- "Research X and send me a summary" (could take many tool calls)
-- "Analyze this codebase and report back"
-- "Run these 5 scripts and compile the results"
-- Any task you estimate will take many steps or significant time
+YOU MUST USE THIS for any task that is NOT a quick back-and-forth. Specifically:
+- Coding tasks (writing code, scripts, configs)
+- Writing long documents or reports
+- Research tasks (searching the web, reading multiple files, analyzing data)
+- Running multiple commands and compiling results
+- Anything that would take more than 2-3 tool calls
 
-Do NOT use for quick tasks that can be done in the current conversation.`,
+Only handle directly (without spawning) if it's a quick interactive question, a short answer, or a simple single-step action.
+
+After spawning, tell the user what you spawned and that the result will arrive shortly.`,
           inputSchema: z.object({
-            taskPrompt: z.string().describe("Complete, self-contained prompt for the task. Include all necessary context — the spawned task has NO access to the current conversation history."),
+            taskPrompt: z.string().describe("Complete, self-contained prompt for the task. Include ALL context needed — the spawned task has NO access to this conversation's history. Be detailed and specific."),
           }),
           execute: async ({ taskPrompt }) => {
             log(`spawnTask: "${taskPrompt.slice(0, 80)}"`);
-            return spawnTaskStep(taskPrompt, platform, channelId);
+            return spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
           },
+        }),
+        listSpawnedTasks: tool({
+          description: "List all tasks spawned from this conversation and their status (running/completed). Use when the user asks about running tasks, pending tasks, or wants to check if something finished.",
+          inputSchema: z.object({}),
+          execute: async () => { log(`listSpawnedTasks`); return listSpawnedTasksStep(conversation.id); },
         }),
         updateMemory: tool({
           description: 'Update the persistent memory file (~/.dispatch/memories.md). A sub-agent will intelligently merge your instruction into the existing memories — resolving contradictions, updating existing entries, or adding new ones. Use for "remember that...", "from now on...", "always do X", "stop doing Y".',
