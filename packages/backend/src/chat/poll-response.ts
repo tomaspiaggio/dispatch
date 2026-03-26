@@ -95,6 +95,11 @@ export async function waitAndPostResponse({
       if (postedIds.has(msg.id) || !msg.content) continue;
       postedIds.add(msg.id);
       idleDeadline = Date.now() + IDLE_TIMEOUT_MS;
+
+      // Status messages (tool-call progress) reset the idle timer but are NOT
+      // sent to the user — only assistant messages are delivered to chat.
+      if (msg.role === "status") continue;
+
       log(`Posting [${msg.role}]: ${msg.content.slice(0, 80)}...`);
       await deliverMessage({ role: msg.role, content: msg.content });
     }
