@@ -18,13 +18,14 @@
     "build": "turbo build",
     "test": "turbo test",
     "db:generate": "pnpm --filter @dispatch/backend prisma generate",
-    "db:push": "pnpm --filter @dispatch/backend prisma db push",
+    "db:push": "pnpm --filter @dispatch/backend prisma db push --accept-data-loss",
     "db:studio": "pnpm --filter @dispatch/backend prisma studio",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
-    "setup": "pnpm docker:up && pnpm db:generate && pnpm db:push"
+    "setup": "pnpm docker:up && pnpm db:generate && npx dotenv-cli -e .env -- pnpm --filter @dispatch/backend exec workflow-postgres-setup && pnpm db:push"
   },
   "devDependencies": {
+    "dotenv-cli": "^11.0.0",
     "turbo": "^2.8.20"
   }
 }

@@ -2,8 +2,8 @@
 import React from "react";
 import { render } from "ink";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { trpc, trpcClient } from "./trpc.js";
-import App from "./app.js";
+import { trpc, trpcClient } from "./trpc";
+import App from "./App";
 
 const queryClient = new QueryClient({
   defaultOptions: {

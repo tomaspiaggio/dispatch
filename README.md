@@ -173,6 +173,7 @@ Every incoming message (from any platform) triggers a durable workflow:
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
 | `ALLOWED_TELEGRAM_IDS` | Comma-separated Telegram user IDs (empty = allow all) |
 | `DATABASE_URL` | PostgreSQL connection string |
+| `WORKFLOW_POSTGRES_URL` | Postgres URL for workflow durability (usually same as DATABASE_URL) |
 | `REDIS_URL` | Redis connection string |
 | `DISPATCH_API_URL` | Backend URL for the TUI (default: `http://localhost:3000`) |
 | `PLAYWRIGHT_MCP_URL` | Playwright MCP server URL |
@@ -191,9 +192,116 @@ Every incoming message (from any platform) triggers a durable workflow:
 | `pnpm setup` | Full setup: docker + prisma generate + db push |
 | `pnpm db:studio` | Open Prisma Studio (DB GUI) |
 
-## Config Files
+## Deploy as a Daemon (Raspberry Pi / Linux)
+
+Run Dispatch as a systemd service that **starts on boot**, **restarts on crash**, and **survives SSH disconnects**.
+
+### Prerequisites
+
+```bash
+# Node.js 22+
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# pnpm
+npm i -g pnpm@10
+
+# Docker + Docker Compose
+# https://docs.docker.com/engine/install/debian/
+# After install: sudo usermod -aG docker $USER && newgrp docker
+
+# Git
+sudo apt install -y git
+```
+
+### Full setup from scratch
+
+```bash
+# 1. Clone
+git clone https://github.com/your-org/dispatch.git
+cd dispatch
+
+# 2. Create .env with your keys
+cp .env.example .env
+nano .env
+```
+
+Required `.env` values:
+```env
+GOOGLE_GENERATIVE_AI_API_KEY=...       # from https://aistudio.google.com/apikey
+TELEGRAM_BOT_TOKEN=...                 # from @BotFather on Telegram
+ALLOWED_TELEGRAM_IDS=...               # your Telegram user ID (from @userinfobot)
+DATABASE_URL=postgres://dispatch:dispatch@localhost:5432/dispatch
+WORKFLOW_POSTGRES_URL=postgres://dispatch:dispatch@localhost:5432/dispatch
+REDIS_URL=redis://localhost:6379
+```
+
+```bash
+# 3. Run the installer — does everything
+./scripts/install-service.sh
+```
+
+The installer:
+1. `pnpm install` — dependencies
+2. `prisma generate` — database client
+3. `turbo build` — shared → backend → cli
+4. `docker compose up -d` — Postgres + Redis containers
+5. `workflow-postgres-setup` — workflow durability tables
+6. `prisma db push` — app tables (conversations, messages)
+7. Creates systemd service at `~/.config/systemd/user/dispatch.service`
+8. Enables **lingering** — service runs without a login session
+9. Starts the service
+
+### Custom env file location
+
+```bash
+./scripts/install-service.sh /home/pi/my-dispatch.env
+```
+
+The systemd service will use this path for `EnvironmentFile=`.
+
+### Will it restart on reboot?
+
+**Yes.** Three things ensure this:
+- `loginctl enable-linger $USER` — user services start at boot, not at login
+- `WantedBy=default.target` — service is part of the default startup
+- `Restart=always` + `RestartSec=5` — restarts on crash after 5 seconds
+
+### Managing the service
+
+```bash
+systemctl --user status dispatch        # is it running?
+systemctl --user restart dispatch       # restart (after env or code changes)
+systemctl --user stop dispatch          # stop
+journalctl --user -u dispatch -f        # follow logs live
+journalctl --user -u dispatch -n 100    # last 100 log lines
+journalctl --user -u dispatch --since today  # today's logs
+```
+
+### Updating
+
+```bash
+cd /path/to/dispatch
+git pull
+./scripts/install-service.sh
+```
+
+The installer is idempotent — rebuilds, re-pushes schema, restarts the service.
+
+### Uninstall
+
+```bash
+./scripts/uninstall-service.sh
+# Docker containers + data are NOT removed. To remove:
+docker compose down -v
+```
+
+### Where things live
 
 | Path | Purpose |
 |---|---|
+| `~/.config/systemd/user/dispatch.service` | systemd service unit |
 | `~/.dispatch/soul.md` | Agent identity — name, tone, personality |
 | `~/.dispatch/memories.md` | Persistent instructions and preferences |
+| `.env` (or custom path) | API keys, tokens, database URLs |
+| Docker volumes `dispatch_pgdata`, `dispatch_redisdata` | Database + Redis data |
