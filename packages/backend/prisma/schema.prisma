@@ -36,3 +36,20 @@ model Message {
   @@map("messages")
 }
 
+model Schedule {
+  id             String    @id @default(uuid())
+  name           String
+  prompt         String
+  cronExpression String?   @map("cron_expression")
+  platform       String
+  channelId      String    @map("channel_id")
+  threadJson     String?   @map("thread_json")
+  status         String    @default("active")
+  nextRun        DateTime? @map("next_run")
+  lastRun        DateTime? @map("last_run")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([status, nextRun])
+  @@map("schedules")
+}
+
