@@ -13,7 +13,8 @@
   "scripts": {
     "dev": "turbo dev",
     "dev:backend": "turbo dev --filter=@dispatch/backend",
-    "dev:frontend": "turbo dev --filter=@dispatch/frontend",
+    "dev:cli": "turbo dev --filter=@dispatch/cli",
+    "dispatch": "pnpm --filter @dispatch/cli dev",
     "build": "turbo build",
     "test": "turbo test",
     "db:generate": "pnpm --filter @dispatch/backend prisma generate",
