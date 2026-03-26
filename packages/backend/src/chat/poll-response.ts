@@ -6,6 +6,7 @@ const POLL_INTERVAL_MS = 2_000;
 const IDLE_TIMEOUT_MS = 120_000;
 const COMPLETION_GRACE_MS = 5_000;
 const MAX_WAIT_MS = 30 * 60_000;
+const STATUS_UPDATE_INTERVAL_MS = 30_000;
 
 type LogFn = (msg: string, data?: unknown) => void;
 
@@ -18,6 +19,7 @@ type WaitAndPostOptions = {
   log: LogFn;
   deliverMessage: DeliverMessage;
   timeoutMessage: string;
+  keepTyping?: () => Promise<void>;
 };
 
 export async function waitForConversation(
@@ -53,11 +55,14 @@ export async function waitAndPostResponse({
   log,
   deliverMessage,
   timeoutMessage,
+  keepTyping,
 }: WaitAndPostOptions) {
   const postedIds = new Set<string>();
   const startedAt = Date.now();
   let idleDeadline = startedAt + IDLE_TIMEOUT_MS;
   let completedAt: number | null = null;
+  let lastStatusUpdateAt = startedAt;
+  let statusUpdateCount = 0;
   let lastKnownStatus:
     | "pending"
     | "running"
@@ -71,6 +76,11 @@ export async function waitAndPostResponse({
 
   while (Date.now() - startedAt < MAX_WAIT_MS) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+    // Re-send typing indicator each poll cycle
+    if (keepTyping) {
+      try { await keepTyping(); } catch {}
+    }
 
     const msgs = await prisma.message.findMany({
       where: {
@@ -104,6 +114,24 @@ export async function waitAndPostResponse({
       completedAt ??= Date.now();
       if (Date.now() - completedAt >= COMPLETION_GRACE_MS) break;
       continue;
+    }
+
+    // Send periodic status updates so the user knows it's still working
+    if (
+      Date.now() - lastStatusUpdateAt >= STATUS_UPDATE_INTERVAL_MS &&
+      status === "running" &&
+      statusUpdateCount < 3
+    ) {
+      const messages = [
+        "Still working on it...",
+        "Taking a bit longer than usual, but still on it...",
+        "Still going — complex tasks can take a while.",
+      ];
+      const msg = messages[statusUpdateCount] ?? messages[messages.length - 1];
+      log(`Sending status update: "${msg}"`);
+      await deliverMessage({ role: "status", content: msg });
+      lastStatusUpdateAt = Date.now();
+      statusUpdateCount++;
     }
 
     if (Date.now() >= idleDeadline) {

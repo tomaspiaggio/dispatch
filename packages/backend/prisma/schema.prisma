@@ -36,23 +36,3 @@ model Message {
   @@map("messages")
 }
 
-enum status {
-  pending
-  running
-  completed
-  failed
-  cancelled
-}
-
-enum step_status {
-  pending
-  running
-  completed
-  failed
-  cancelled
-}
-
-enum wait_status {
-  waiting
-  completed
-}
