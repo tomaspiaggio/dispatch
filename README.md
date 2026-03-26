@@ -191,9 +191,47 @@ Every incoming message (from any platform) triggers a durable workflow:
 | `pnpm setup` | Full setup: docker + prisma generate + db push |
 | `pnpm db:studio` | Open Prisma Studio (DB GUI) |
 
-## Config Files
+## Deploy as a Daemon (systemd)
+
+For running on a Raspberry Pi or any Linux server. Builds the project, creates a systemd user service, and starts on boot.
+
+```bash
+# Default: uses .env from project root
+./scripts/install-service.sh
+
+# Custom env file location (e.g., for a Pi with a different path)
+./scripts/install-service.sh /home/pi/dispatch.env
+```
+
+What it does:
+1. Installs dependencies + builds the backend
+2. Starts Docker containers (Postgres + Redis)
+3. Pushes DB schema
+4. Creates `~/.config/systemd/user/dispatch.service`
+5. Enables lingering (runs without login session)
+6. Starts the service
+
+### Managing the service
+
+```bash
+systemctl --user status dispatch      # check status
+systemctl --user restart dispatch     # restart (e.g., after env changes)
+systemctl --user stop dispatch        # stop
+journalctl --user -u dispatch -f      # follow logs
+journalctl --user -u dispatch -n 100  # last 100 lines
+```
+
+### Uninstall
+
+```bash
+./scripts/uninstall-service.sh
+```
+
+### Where things live
 
 | Path | Purpose |
 |---|---|
+| `~/.config/systemd/user/dispatch.service` | systemd service file |
 | `~/.dispatch/soul.md` | Agent identity — name, tone, personality |
 | `~/.dispatch/memories.md` | Persistent instructions and preferences |
+| `.env` (or custom path) | All secrets and config |

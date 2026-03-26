@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: dispatch-postgres
-    restart: unless-stopped
+    restart: always
     ports:
       - "5432:5432"
     environment:
@@ -20,7 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: dispatch-redis
-    restart: unless-stopped
+    restart: always
     ports:
       - "6379:6379"
     volumes:
