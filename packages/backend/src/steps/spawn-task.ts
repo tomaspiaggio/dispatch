@@ -45,8 +45,8 @@ export async function spawnTaskStep(
 export async function listSpawnedTasksStep(parentConversationId: string) {
   "use step";
 
-  // Find _spawnedTask records from the last 24 hours
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  // Find _spawnedTask records from the last hour
+  const since = new Date(Date.now() - 60 * 60 * 1000);
   const taskMessages = await prisma.message.findMany({
     where: {
       conversationId: parentConversationId,
