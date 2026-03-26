@@ -2,7 +2,7 @@ import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import { start } from "workflow/api";
 import { handleMessageWorkflow } from "../workflows/handle-message";
-import { prisma } from "../lib/prisma";
+import { waitAndPostResponse, waitForConversation } from "./poll-response";
 
 let socketClient: SocketModeClient | null = null;
 let webClient: WebClient | null = null;
@@ -28,47 +28,6 @@ async function postMessage(channel: string, text: string, threadTs?: string) {
   } catch (err) {
     log(`postMessage failed: ${err}`);
   }
-}
-
-async function waitAndPostResponse(
-  channel: string,
-  conversationId: string,
-  startTime: Date,
-  threadTs?: string
-) {
-  const maxWait = 120_000;
-  const pollInterval = 2000;
-  const postedIds = new Set<string>();
-
-  const deadline = Date.now() + maxWait;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollInterval));
-
-    const msgs = await prisma.message.findMany({
-      where: {
-        conversationId,
-        role: { in: ["assistant", "status"] },
-        createdAt: { gt: startTime },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-
-    for (const msg of msgs) {
-      if (postedIds.has(msg.id) || !msg.content) continue;
-      postedIds.add(msg.id);
-      log(`Posting: [${msg.role}] ${msg.content.slice(0, 80)}...`);
-      const text = msg.role === "status" ? `_${msg.content}_` : msg.content;
-      await postMessage(channel, text, threadTs);
-    }
-
-    if (msgs.some((m) => m.role === "assistant" && postedIds.has(m.id))) {
-      log(`Response delivered`);
-      return;
-    }
-  }
-
-  log(`TIMEOUT`);
-  await postMessage(channel, "Sorry, I timed out. The task might still be running.", threadTs);
 }
 
 import { google } from "@ai-sdk/google";
@@ -221,7 +180,7 @@ async function handleSlackMessage(
     const conversationThreadId = threadTs ?? `slack-${channelId}-${Date.now()}`;
 
     log(`Workflow start`, { channelId, threadId: conversationThreadId });
-    await start(handleMessageWorkflow, [
+    const run = await start(handleMessageWorkflow, [
       null,
       text,
       "slack",
@@ -230,19 +189,20 @@ async function handleSlackMessage(
     ]);
 
     // Wait for conversation
-    const deadline = Date.now() + 15_000;
-    let conv = null;
-    while (Date.now() < deadline) {
-      conv = await prisma.conversation.findFirst({
-        where: { platform: "slack", channelId },
-        orderBy: { createdAt: "desc" },
-      });
-      if (conv) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    const conv = await waitForConversation("slack", channelId, conversationThreadId);
 
     if (conv) {
-      await waitAndPostResponse(channelId, conv.id, startTime, threadTs);
+      await waitAndPostResponse({
+        conversationId: conv.id,
+        startTime,
+        run,
+        log,
+        timeoutMessage: "Sorry, I timed out. The task might still be running.",
+        deliverMessage: async ({ role, content }) => {
+          const text = role === "status" ? `_${content}_` : content;
+          await postMessage(channelId, text, threadTs);
+        },
+      });
     } else {
       await postMessage(channelId, "Something went wrong: couldn't create conversation.", threadTs);
     }

@@ -69,7 +69,7 @@ export const appRouter = t.router({
         conversation.id,
       ]);
 
-      return { conversationId: conversation.id };
+      return { conversationId: conversation.id, runId: run.runId };
     }),
 
   // Stats
