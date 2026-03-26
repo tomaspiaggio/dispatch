@@ -60,8 +60,23 @@ export async function getConversationHistoryStep(
 
   // Always include the most recent messages, trim older ones if over budget
   for (const m of messages) {
-    const content = m.content ?? "";
-    const msgTokens = estimateTokens(content);
+    const rawContent = m.content ?? "";
+    let content: string | any[] = rawContent;
+
+    // Handle multimodal JSON content
+    if (rawContent.startsWith("[") || rawContent.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(rawContent);
+        if (Array.isArray(parsed)) {
+          content = parsed;
+        }
+      } catch {
+        // Not valid JSON or not an array, keep as string
+      }
+    }
+
+    const contentStr = typeof content === "string" ? content : JSON.stringify(content);
+    const msgTokens = estimateTokens(contentStr);
 
     if (tokenCount + msgTokens > MAX_HISTORY_TOKENS && result.length > 0) {
       // Over budget — prepend a summary note and stop adding older messages
@@ -75,7 +90,7 @@ export async function getConversationHistoryStep(
 
     result.push({
       role: m.role as "user" | "assistant",
-      content,
+      content: content as any,
     });
     tokenCount += msgTokens;
   }

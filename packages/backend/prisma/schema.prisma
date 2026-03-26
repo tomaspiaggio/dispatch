@@ -12,9 +12,9 @@ model Conversation {
   channelId String    @map("channel_id")
   threadId  String?   @map("thread_id")
   title     String?
-  messages  Message[]
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
+  messages  Message[]
 
   @@unique([platform, channelId, threadId])
   @@index([platform])
@@ -23,7 +23,6 @@ model Conversation {
 
 model Message {
   id             String       @id @default(uuid())
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
   conversationId String       @map("conversation_id")
   role           String
   content        String?
@@ -31,7 +30,29 @@ model Message {
   thinking       String?
   tokensUsed     Json?        @map("tokens_used")
   createdAt      DateTime     @default(now()) @map("created_at")
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
   @@map("messages")
+}
+
+enum status {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum step_status {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum wait_status {
+  waiting
+  completed
 }

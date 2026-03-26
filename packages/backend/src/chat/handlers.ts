@@ -153,8 +153,21 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
   const startTime = new Date();
 
   try {
+    // Check for voice messages
+    const audioAttachment = lastMessage.attachments?.find((a: any) => a.type === "audio");
+    let content: any = messageText;
+    if (audioAttachment && audioAttachment.fetchData) {
+      log(`Voice message detected, downloading...`);
+      const buffer = await audioAttachment.fetchData();
+      log(`Downloaded ${buffer.length} bytes`);
+      content = [
+        { type: "text", text: messageText || "Voice message" },
+        { type: "file", data: buffer.toString("base64"), mimeType: audioAttachment.mimeType || "audio/ogg" },
+      ];
+    }
+
     // Fast contextual ack via flash-lite
-    const ack = await generateAck(messageText);
+    const ack = await generateAck(messageText || "voice message");
     log(`Ack: "${ack}"`);
     await thread.post(ack);
     try { await thread.startTyping(); } catch {}
@@ -163,7 +176,7 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
     log(`Starting workflow...`);
     await start(handleMessageWorkflow, [
       JSON.stringify(thread),
-      messageText,
+      typeof content === "string" ? content : JSON.stringify(content),
       adapterName,
       channelId,
       thread.id ?? null,
