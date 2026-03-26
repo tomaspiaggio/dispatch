@@ -20,6 +20,7 @@
     "@prisma/client": "^7.0.0",
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.0",
+    "@trpc/server": "^11.15.0",
     "@workflow/ai": "4.1.0-beta.58",
     "@workflow/world-postgres": "4.1.0-beta.47",
     "ai": "^6.0.138",
