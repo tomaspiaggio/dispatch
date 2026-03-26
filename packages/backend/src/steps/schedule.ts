@@ -28,12 +28,25 @@ export async function createScheduleStep(
   const { CronExpressionParser } = await import("cron-parser");
 
   let nextRun: Date | null = null;
+  let type: "recurring" | "one-time";
 
   if (cronExpression) {
+    type = "recurring";
     const interval = CronExpressionParser.parse(cronExpression);
     nextRun = interval.next().toDate();
   } else if (delay) {
-    nextRun = new Date(Date.now() + parseDelay(delay));
+    type = "one-time";
+    const ms = parseDelay(delay);
+    nextRun = new Date(Date.now() + ms);
+  } else {
+    return { error: "You must provide either cronExpression (for recurring) or delay (for one-time)." };
+  }
+
+  // Sanity check: nextRun should be in the future
+  if (nextRun.getTime() <= Date.now()) {
+    return {
+      error: `The computed next run time (${nextRun.toISOString()}) is in the past. Use a future time or a longer delay.`,
+    };
   }
 
   const schedule = await prisma.schedule.create({
@@ -50,10 +63,15 @@ export async function createScheduleStep(
   });
 
   return {
+    success: true,
     scheduleId: schedule.id,
     name: schedule.name,
-    nextRun: nextRun?.toISOString() ?? null,
-    type: cronExpression ? "recurring" : "one-time",
+    type,
+    nextRun: nextRun.toISOString(),
+    cronExpression: cronExpression ?? null,
+    message: type === "recurring"
+      ? `Recurring schedule "${name}" created. Next run: ${nextRun.toISOString()}`
+      : `One-time schedule "${name}" created. Will run at: ${nextRun.toISOString()}`,
   };
 }
 
@@ -65,26 +83,37 @@ export async function listSchedulesStep(status?: string) {
     orderBy: { createdAt: "desc" },
   });
 
-  return schedules.map((s) => ({
-    id: s.id,
-    name: s.name,
-    prompt: s.prompt,
-    cronExpression: s.cronExpression,
-    platform: s.platform,
-    channelId: s.channelId,
-    status: s.status,
-    nextRun: s.nextRun?.toISOString() ?? null,
-    lastRun: s.lastRun?.toISOString() ?? null,
-    createdAt: s.createdAt.toISOString(),
-  }));
+  if (schedules.length === 0) {
+    return { schedules: [], message: "No schedules found." };
+  }
+
+  return {
+    schedules: schedules.map((s) => ({
+      id: s.id,
+      name: s.name,
+      prompt: s.prompt.length > 100 ? s.prompt.slice(0, 100) + "..." : s.prompt,
+      type: s.cronExpression ? "recurring" : "one-time",
+      cronExpression: s.cronExpression,
+      platform: s.platform,
+      channelId: s.channelId,
+      status: s.status,
+      nextRun: s.nextRun?.toISOString() ?? null,
+      lastRun: s.lastRun?.toISOString() ?? null,
+      createdAt: s.createdAt.toISOString(),
+    })),
+    message: `Found ${schedules.length} schedule(s).`,
+  };
 }
 
 export async function deleteScheduleStep(scheduleId: string) {
   "use step";
 
-  const schedule = await prisma.schedule.delete({
-    where: { id: scheduleId },
-  });
-
-  return { deleted: true, name: schedule.name };
+  try {
+    const schedule = await prisma.schedule.delete({
+      where: { id: scheduleId },
+    });
+    return { deleted: true, name: schedule.name, message: `Schedule "${schedule.name}" deleted.` };
+  } catch {
+    return { deleted: false, error: `Schedule with ID "${scheduleId}" not found.` };
+  }
 }

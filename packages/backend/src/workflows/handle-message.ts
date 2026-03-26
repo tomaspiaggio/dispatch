@@ -100,12 +100,19 @@ export async function handleMessageWorkflow(
           execute: async ({ scriptPath, args }) => { log(`runScript: ${scriptPath}`); return runScriptStep(scriptPath, args); },
         }),
         createSchedule: tool({
-          description: 'Create a scheduled task. For one-time delays use the delay parameter (e.g. "30m", "2h", "1d"). For recurring tasks use a cron expression (e.g. "30 8 * * *" for daily at 8:30 AM). The task will run as a fresh conversation and deliver the response to the current chat platform. Returns immediately — does NOT block.',
+          description: `Schedule a task to run later. This tool SAVES the schedule to the database and returns immediately — the scheduler will execute it automatically. You must provide EITHER cronExpression (recurring) OR delay (one-time), not both.
+
+Examples:
+- "remind me in 30 minutes" → delay: "30m"
+- "every day at 8:30 AM" → cronExpression: "30 8 * * *"
+- "every Monday at 9 AM" → cronExpression: "0 9 * * 1"
+
+After calling this tool, confirm to the user with the schedule details (name, when it will run). Do NOT call any other scheduling tools — this one does everything.`,
           inputSchema: z.object({
-            name: z.string().describe("Short human-readable name for this schedule"),
-            taskPrompt: z.string().describe("The full prompt to execute when the schedule fires"),
-            cronExpression: z.string().optional().describe('Cron expression for recurring tasks, e.g. "30 8 * * *" (min hour dom month dow)'),
-            delay: z.string().optional().describe('One-time delay like "30m", "2h", "1d"'),
+            name: z.string().describe("Short human-readable name, e.g. 'Weather Reminder' or 'Daily HN Summary'"),
+            taskPrompt: z.string().describe("The full prompt the agent will execute when the schedule fires. Be specific — this runs in a fresh conversation with no prior context."),
+            cronExpression: z.string().optional().describe('Cron expression for RECURRING tasks. Format: "min hour dom month dow". E.g. "30 8 * * *" = daily at 8:30 AM. Server timezone is PDT/PST.'),
+            delay: z.string().optional().describe('One-time delay for single reminders. E.g. "2m", "30m", "2h", "1d". Cannot be combined with cronExpression.'),
           }),
           execute: async ({ name, taskPrompt, cronExpression, delay }) => {
             log(`createSchedule: "${name}" cron=${cronExpression ?? "none"} delay=${delay ?? "none"}`);
@@ -113,16 +120,16 @@ export async function handleMessageWorkflow(
           },
         }),
         listSchedules: tool({
-          description: "List all active and paused schedules. Use to show the user their scheduled tasks or to find a schedule ID for deletion.",
+          description: "List all scheduled tasks from the database. Returns an array of schedules with their IDs, names, prompts, next run times, and status. Call this when the user asks to see their schedules or before deleting one.",
           inputSchema: z.object({
             status: z.string().optional().describe('Filter by status: "active", "paused", "completed". Omit to show all non-completed.'),
           }),
           execute: async ({ status }) => { log(`listSchedules`); return listSchedulesStep(status); },
         }),
         deleteSchedule: tool({
-          description: "Delete a schedule by its ID. Use listSchedules first to find the ID.",
+          description: "Permanently delete a schedule by its ID. Call listSchedules first to find the ID if you don't have it.",
           inputSchema: z.object({
-            scheduleId: z.string().describe("The schedule ID to delete"),
+            scheduleId: z.string().describe("The UUID of the schedule to delete"),
           }),
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
