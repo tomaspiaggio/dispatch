@@ -45,18 +45,19 @@ export async function spawnTaskStep(
 export async function listSpawnedTasksStep(parentConversationId: string) {
   "use step";
 
-  // Find all _spawnedTask tool call records in this conversation
+  // Find _spawnedTask records from the last 24 hours
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const taskMessages = await prisma.message.findMany({
     where: {
       conversationId: parentConversationId,
       role: "tool",
+      createdAt: { gte: since },
     },
     orderBy: { createdAt: "desc" },
   });
 
   const tasks: {
-    conversationId: string;
-    runId: string;
+    id: string;
     prompt: string;
     spawnedAt: string;
     status: "running" | "completed" | "unknown";
@@ -68,22 +69,29 @@ export async function listSpawnedTasksStep(parentConversationId: string) {
     for (const call of calls) {
       if (call.toolName !== "_spawnedTask") continue;
 
-      // Check if the spawned conversation has an assistant response
-      const assistantMsg = await prisma.message.findFirst({
-        where: {
-          conversationId: call.spawnedConversationId,
-          role: "assistant",
-        },
-        orderBy: { createdAt: "desc" },
+      // Find the spawned conversation by threadId
+      const spawnedConv = await prisma.conversation.findFirst({
+        where: { threadId: call.spawnedConversationId },
       });
 
+      let status: "running" | "completed" | "unknown" = "unknown";
+      let result: string | null = null;
+
+      if (spawnedConv) {
+        const assistantMsg = await prisma.message.findFirst({
+          where: { conversationId: spawnedConv.id, role: "assistant" },
+          orderBy: { createdAt: "desc" },
+        });
+        status = assistantMsg ? "completed" : "running";
+        result = assistantMsg?.content?.slice(0, 200) ?? null;
+      }
+
       tasks.push({
-        conversationId: call.spawnedConversationId,
-        runId: call.runId,
+        id: call.spawnedConversationId,
         prompt: call.prompt,
         spawnedAt: call.spawnedAt,
-        status: assistantMsg ? "completed" : "running",
-        result: assistantMsg?.content?.slice(0, 200) ?? null,
+        status,
+        result,
       });
     }
   }
