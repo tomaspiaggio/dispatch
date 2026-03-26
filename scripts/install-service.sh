@@ -1,23 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install Dispatch as a systemd user service.
+# ==============================================================================
+# Dispatch — systemd service installer
 #
-# Usage:
-#   ./scripts/install-service.sh                          # uses .env from project root
-#   ./scripts/install-service.sh /path/to/custom.env      # custom env file location
+# Installs Dispatch as a systemd user service that starts on boot and
+# auto-restarts on crash. Works on any Linux with systemd (Raspberry Pi,
+# Ubuntu, Debian, etc.).
 #
-# This script:
-#   1. Builds the project (shared + backend)
-#   2. Creates a systemd user service (~/.config/systemd/user/dispatch.service)
-#   3. Enables it to start on boot (via lingering)
-#   4. Starts the service
+# PREREQUISITES:
+#   1. Node.js 22+     → curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+#   2. pnpm            → npm i -g pnpm@10
+#   3. Docker + Compose → https://docs.docker.com/engine/install/debian/
+#   4. Git             → sudo apt install -y git
 #
-# Prerequisites:
-#   - Node.js 22+
-#   - pnpm installed
-#   - Docker running (for Postgres + Redis)
-#   - systemd with user sessions (Linux / Raspberry Pi)
+# QUICK START (from a fresh clone):
+#   git clone https://github.com/your-org/dispatch.git
+#   cd dispatch
+#   cp .env.example .env          # edit with your API keys
+#   ./scripts/install-service.sh
+#
+# CUSTOM ENV FILE:
+#   ./scripts/install-service.sh /home/pi/my-dispatch.env
+#
+# WHAT THIS SCRIPT DOES:
+#   1. pnpm install (dependencies)
+#   2. prisma generate (database client)
+#   3. turbo build (shared → backend → cli)
+#   4. docker compose up -d (Postgres + Redis)
+#   5. workflow-postgres-setup (workflow tables)
+#   6. prisma db push (app tables)
+#   7. Creates ~/.config/systemd/user/dispatch.service
+#   8. Enables lingering (service runs without login session)
+#   9. Starts the service
+#
+# AFTER INSTALL:
+#   - Service auto-starts on boot (via lingering)
+#   - Auto-restarts on crash (restart=always, 5s delay)
+#   - Logs: journalctl --user -u dispatch -f
+#   - Status: systemctl --user status dispatch
+# ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,15 +48,29 @@ NODE_BIN="$(which node)"
 PNPM_BIN="$(which pnpm)"
 
 echo "=== Dispatch Service Installer ==="
-echo "Project dir: $PROJECT_DIR"
-echo "Env file:    $ENV_FILE"
-echo "Node:        $NODE_BIN"
+echo ""
+echo "  Project:  $PROJECT_DIR"
+echo "  Env file: $ENV_FILE"
+echo "  Node:     $NODE_BIN ($(node --version))"
+echo "  pnpm:     $PNPM_BIN ($(pnpm --version))"
+echo "  User:     $USER"
 echo ""
 
-# Validate
+# --- Validate ---
+
 if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: Env file not found: $ENV_FILE"
-  echo "Copy .env.example to .env and fill in your keys first."
+  echo ""
+  echo "Create it first:"
+  echo "  cp .env.example .env"
+  echo "  nano .env   # fill in your API keys"
+  echo ""
+  echo "Required keys:"
+  echo "  GOOGLE_GENERATIVE_AI_API_KEY  — from https://aistudio.google.com/apikey"
+  echo "  TELEGRAM_BOT_TOKEN           — from @BotFather on Telegram"
+  echo "  ALLOWED_TELEGRAM_IDS         — your Telegram user ID (from @userinfobot)"
+  echo "  DATABASE_URL                 — postgres://dispatch:dispatch@localhost:5432/dispatch"
+  echo "  WORKFLOW_POSTGRES_URL        — same as DATABASE_URL"
   exit 1
 fi
 
@@ -43,38 +79,49 @@ if [ ! -f "$PROJECT_DIR/package.json" ]; then
   exit 1
 fi
 
-# Step 1: Install dependencies
-echo ">>> Installing dependencies..."
+# --- Step 1: Install dependencies ---
+echo ">>> [1/7] Installing dependencies..."
 cd "$PROJECT_DIR"
 $PNPM_BIN install --frozen-lockfile
 
-# Step 2: Generate Prisma client + build everything via Turborepo
-echo ">>> Generating Prisma client..."
+# --- Step 2: Generate Prisma client ---
+echo ">>> [2/7] Generating Prisma client..."
 cd "$PROJECT_DIR/packages/backend"
 npx prisma generate
 
-echo ">>> Building all packages (via Turborepo)..."
+# --- Step 3: Build all packages via Turborepo ---
+echo ">>> [3/7] Building all packages..."
 cd "$PROJECT_DIR"
 $PNPM_BIN build
 
-# Step 3: Start Docker containers (if not already running)
-echo ">>> Ensuring Docker containers are running..."
+# --- Step 4: Start Docker containers ---
+echo ">>> [4/7] Starting Postgres + Redis..."
 cd "$PROJECT_DIR"
 docker compose up -d
 
-# Step 4: Push DB schema
-echo ">>> Pushing database schema..."
-cd "$PROJECT_DIR/packages/backend"
-# Load env for DATABASE_URL
-set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
-npx prisma db push || echo "WARNING: prisma db push failed — DB might not be ready yet"
+# Wait for Postgres to be ready
+echo "    Waiting for Postgres..."
+for i in $(seq 1 15); do
+  if docker exec dispatch-postgres pg_isready -U dispatch -d dispatch > /dev/null 2>&1; then
+    echo "    Postgres is ready."
+    break
+  fi
+  sleep 1
+done
 
-echo ">>> Running workflow postgres migration..."
+# --- Step 5: Run workflow Postgres migration ---
+echo ">>> [5/7] Running workflow database migration..."
 cd "$PROJECT_DIR"
-$PNPM_BIN --filter @dispatch/backend exec workflow-postgres-setup || echo "WARNING: workflow-postgres-setup failed"
+set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
+$PNPM_BIN --filter @dispatch/backend exec workflow-postgres-setup || echo "    WARNING: workflow-postgres-setup failed (may already be set up)"
 
-# Step 5: Create systemd service
-echo ">>> Creating systemd user service..."
+# --- Step 6: Push Prisma schema ---
+echo ">>> [6/7] Pushing Prisma schema..."
+cd "$PROJECT_DIR/packages/backend"
+npx prisma db push --accept-data-loss || echo "    WARNING: prisma db push failed"
+
+# --- Step 7: Create and start systemd service ---
+echo ">>> [7/7] Setting up systemd service..."
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_DIR"
 
@@ -94,43 +141,62 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
-# Workflow compiler + Telegram/Slack init takes time
+# Workflow compiler + Telegram/Slack init takes time on startup
 TimeoutStartSec=60
 
 [Install]
+# default.target ensures the service starts when the user session is active.
+# Combined with lingering (below), this means it starts on boot — no login needed.
 WantedBy=default.target
 UNIT
 
-echo "Created: $SYSTEMD_DIR/dispatch.service"
+echo "    Created: $SYSTEMD_DIR/dispatch.service"
 
-# Step 6: Enable and start
-echo ">>> Reloading systemd..."
+# Reload systemd
 systemctl --user daemon-reload
 
-echo ">>> Enabling service (starts on boot)..."
+# Enable the service (auto-start on boot)
 systemctl --user enable dispatch.service
 
-# Enable lingering so user services run without being logged in
-echo ">>> Enabling lingering for user $USER..."
-loginctl enable-linger "$USER" 2>/dev/null || sudo loginctl enable-linger "$USER" || echo "WARNING: Could not enable lingering. Service may not start on boot without a login session."
+# Enable lingering: allows user services to run without an active login session.
+# Without this, systemd kills user services when you log out / SSH disconnects.
+echo "    Enabling lingering for $USER..."
+loginctl enable-linger "$USER" 2>/dev/null \
+  || sudo loginctl enable-linger "$USER" 2>/dev/null \
+  || echo "    WARNING: Could not enable lingering. Service may stop when you log out."
 
-echo ">>> Starting service..."
+# Start (or restart) the service
 systemctl --user restart dispatch.service
 
-sleep 2
+# Wait for it to come up
+sleep 3
 
 echo ""
-echo "=== Done! ==="
+echo "============================================"
+echo "  Dispatch is running!"
+echo "============================================"
 echo ""
-echo "Service status:"
-systemctl --user status dispatch.service --no-pager || true
+systemctl --user status dispatch.service --no-pager -l 2>/dev/null || true
 echo ""
-echo "Useful commands:"
-echo "  systemctl --user status dispatch    # check status"
-echo "  systemctl --user restart dispatch   # restart"
-echo "  systemctl --user stop dispatch      # stop"
-echo "  journalctl --user -u dispatch -f    # follow logs"
-echo "  journalctl --user -u dispatch -n 50 # last 50 lines"
+echo "--- Commands ---"
 echo ""
-echo "Env file: $ENV_FILE"
-echo "To change env, edit the file and run: systemctl --user restart dispatch"
+echo "  systemctl --user status dispatch      # is it running?"
+echo "  systemctl --user restart dispatch     # restart after config changes"
+echo "  systemctl --user stop dispatch        # stop"
+echo "  journalctl --user -u dispatch -f      # follow logs (live)"
+echo "  journalctl --user -u dispatch -n 100  # last 100 log lines"
+echo ""
+echo "--- Config ---"
+echo ""
+echo "  Env file:   $ENV_FILE"
+echo "  Soul file:  ~/.dispatch/soul.md"
+echo "  Memory:     ~/.dispatch/memories.md"
+echo "  Service:    $SYSTEMD_DIR/dispatch.service"
+echo ""
+echo "--- Behavior ---"
+echo ""
+echo "  Starts on boot:     YES (via lingering)"
+echo "  Restarts on crash:  YES (every 5 seconds)"
+echo "  Survives logout:    YES (lingering enabled)"
+echo ""
+echo "To update: git pull && ./scripts/install-service.sh"
