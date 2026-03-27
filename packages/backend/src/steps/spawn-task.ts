@@ -8,31 +8,17 @@ export async function spawnTaskStep(
 ) {
   "use step";
 
-  // Guard: only allow one spawned task per conversation per 60 seconds
-  const recentSpawn = await prisma.message.findFirst({
-    where: {
-      conversationId: parentConversationId,
-      role: "tool",
-      createdAt: { gte: new Date(Date.now() - 60_000) },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  if (recentSpawn) {
-    const calls = recentSpawn.toolCalls as any[];
-    if (calls?.some((c: any) => c.toolName === "_spawnedTask")) {
-      return { error: "A task was already spawned. Just confirm to the user and stop." };
-    }
-  }
-
-  // Call the HTTP endpoint instead of importing deliver.ts directly,
-  // because this step runs inside the workflow sandbox where workflow
-  // module imports don't resolve correctly.
   const res = await fetch("http://localhost:3000/api/prompt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, platform, channelId }),
   });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Request failed" })) as { error: string };
+    return { error: err.error ?? "Failed to spawn task." };
+  }
+
   const result = await res.json() as { conversationId: string; runId: string };
 
   // Track the spawned task so we can query its status later
