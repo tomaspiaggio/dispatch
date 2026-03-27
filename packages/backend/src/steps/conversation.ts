@@ -98,21 +98,10 @@ export async function getConversationHistoryStep(
     content: m.content as any,
   }));
 
-  // If we dropped messages, summarize them with LLM and notify the user
+  // If we dropped messages, summarize them with LLM
   if (droppedMessages.length > 0) {
     const reason = keptCount >= MAX_HISTORY_MESSAGES ? "message limit" : "token limit";
     console.log(`[compaction] Compacting ${droppedMessages.length} messages (${reason}), keeping ${recentMessages.length}`);
-
-    // Notify the user that compaction is happening (use assistant role so it's delivered to chat)
-    const { broadcastToConversation } = await import("../lib/ws");
-    const statusMsg = await prisma.message.create({
-      data: {
-        conversationId,
-        role: "assistant",
-        content: `📝 Compacting conversation — summarizing ${droppedMessages.length} older messages to keep context manageable. Recent messages are preserved.`,
-      },
-    });
-    broadcastToConversation(conversationId, "new_message", statusMsg);
 
     let summary: string;
     try {

@@ -8,6 +8,21 @@ import { waitAndPostResponse, waitForConversation } from "./poll-response";
 
 import { MODELS } from "@dispatch/shared";
 
+// Track conversation sessions — /new generates a fresh session so messages
+// go to a new DB conversation instead of accumulating in the old one.
+const sessions = new Map<string, string>();
+function getSessionThreadId(channelId: string, threadId: string | null): string {
+  const key = `${channelId}:${threadId ?? channelId}`;
+  if (!sessions.has(key)) {
+    sessions.set(key, `${threadId ?? channelId}:${Date.now()}`);
+  }
+  return sessions.get(key)!;
+}
+function resetSession(channelId: string, threadId: string | null) {
+  const key = `${channelId}:${threadId ?? channelId}`;
+  sessions.set(key, `${threadId ?? channelId}:${Date.now()}`);
+}
+
 function log(msg: string, data?: any) {
   const ts = new Date().toISOString().slice(11, 23);
   if (data !== undefined) {
@@ -88,6 +103,7 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
   }
 
   if (messageText.trim().toLowerCase() === "/new") {
+    resetSession(channelId, thread.id ?? null);
     await thread.unsubscribe();
     await thread.post("Fresh start! Send me a message to begin a new conversation.");
     return;
@@ -117,19 +133,20 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
     await thread.post(ack);
     try { await thread.startTyping(); } catch {}
 
-    // Start workflow
-    log(`Starting workflow...`);
+    // Start workflow — use session-scoped threadId so /new creates a fresh conversation
+    const sessionThreadId = getSessionThreadId(channelId, thread.id ?? null);
+    log(`Starting workflow...`, { sessionThreadId });
     const run = await start(handleMessageWorkflow, [
       JSON.stringify(thread),
       typeof content === "string" ? content : JSON.stringify(content),
       adapterName,
       channelId,
-      thread.id ?? null,
+      sessionThreadId,
     ]);
 
     // Wait for conversation, then poll for response
     log(`Waiting for conversation...`);
-    const conv = await waitForConversation(adapterName, channelId, thread.id ?? null);
+    const conv = await waitForConversation(adapterName, channelId, sessionThreadId);
 
     if (conv) {
       log(`Found conversation: ${conv.id}`);
