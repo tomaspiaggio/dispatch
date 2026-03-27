@@ -73,6 +73,9 @@ export function createDeliveryCallback(
   };
 }
 
+// Track delivered threadIds to prevent duplicate deliveries
+const deliveredThreads = new Set<string>();
+
 /**
  * Start a workflow with the given prompt and poll for delivery in the background.
  * Returns immediately with { conversationId, runId }.
@@ -123,9 +126,12 @@ export async function executePromptAndDeliver(
         orderBy: { createdAt: "desc" },
       });
 
-      if (lastMsg?.content) {
+      if (lastMsg?.content && !deliveredThreads.has(threadId)) {
+        deliveredThreads.add(threadId);
         log(`Delivering final result: ${lastMsg.content.slice(0, 80)}...`);
         await deliver({ role: "assistant", content: lastMsg.content });
+      } else if (deliveredThreads.has(threadId)) {
+        log(`Already delivered for ${threadId}, skipping`);
       } else {
         log(`Workflow finished but no assistant message found`);
       }
