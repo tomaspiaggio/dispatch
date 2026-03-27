@@ -7,6 +7,23 @@ import { generateText } from "ai";
 import { waitAndPostResponse, waitForConversation } from "./poll-response";
 
 import { MODELS } from "@dispatch/shared";
+import { prisma } from "../lib/prisma";
+import { executePromptAndDeliver } from "./deliver";
+
+// Track conversation sessions — /new generates a fresh session so messages
+// go to a new DB conversation instead of accumulating in the old one.
+const sessions = new Map<string, string>();
+function getSessionThreadId(channelId: string, threadId: string | null): string {
+  const key = `${channelId}:${threadId ?? channelId}`;
+  if (!sessions.has(key)) {
+    sessions.set(key, `${threadId ?? channelId}:${Date.now()}`);
+  }
+  return sessions.get(key)!;
+}
+function resetSession(channelId: string, threadId: string | null) {
+  const key = `${channelId}:${threadId ?? channelId}`;
+  sessions.set(key, `${threadId ?? channelId}:${Date.now()}`);
+}
 
 function log(msg: string, data?: any) {
   const ts = new Date().toISOString().slice(11, 23);
@@ -69,6 +86,87 @@ async function safeSend(thread: any, text: string) {
   }
 }
 
+async function spawnPendingTasks(
+  conversationId: string,
+  platform: string,
+  channelId: string,
+  logFn: typeof log,
+) {
+  try {
+    // Find doTask tool calls — the tasks are in toolCalls[].input.tasks
+    const toolMessages = await prisma.message.findMany({
+      where: {
+        conversationId,
+        role: "tool",
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+
+    // If any doTask was already spawned in this conversation, skip entirely
+    const doTaskMessages = toolMessages.filter(
+      (m) => (m.toolCalls as any[])?.some((c: any) => c.toolName === "doTask")
+    );
+    const alreadySpawned = doTaskMessages.some((m) => m.content === "__spawned");
+
+    logFn(`spawnPendingTasks: ${doTaskMessages.length} doTask message(s), alreadySpawned=${alreadySpawned}`);
+
+    if (alreadySpawned) {
+      // Mark any new doTask calls as spawned too
+      for (const m of doTaskMessages) {
+        if (m.content !== "__spawned") {
+          logFn(`Marking duplicate doTask as __spawned: ${m.id}`);
+          await prisma.message.update({ where: { id: m.id }, data: { content: "__spawned" } });
+        }
+      }
+      logFn(`Already spawned, skipping`);
+      return;
+    }
+
+    if (doTaskMessages.length === 0) {
+      logFn(`No doTask messages found, nothing to spawn`);
+      return;
+    }
+
+    for (const msg of toolMessages) {
+      const calls = msg.toolCalls as any[];
+      if (!calls) continue;
+
+      for (const call of calls) {
+        if (call.toolName !== "doTask") continue;
+        if (msg.content === "__spawned") continue;
+
+        const tasks = call.input?.tasks as { name: string; prompt: string }[] | undefined;
+        if (!tasks?.length) continue;
+
+        logFn(`Found ${tasks.length} pending doTask task(s)`);
+
+        // Mark ALL doTask messages as processed to prevent re-spawning
+        for (const m of toolMessages) {
+          const mCalls = m.toolCalls as any[];
+          if (mCalls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
+            await prisma.message.update({
+              where: { id: m.id },
+              data: { content: "__spawned" },
+            });
+          }
+        }
+
+        for (const task of tasks) {
+          logFn(`Spawning: "${task.name}"`);
+          const prompt = `IMPORTANT: You are a background worker. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — you ARE the task. Complete the work and respond with the result.\n\n${task.prompt}`;
+          await executePromptAndDeliver(prompt, platform, channelId);
+        }
+
+        logFn(`All ${tasks.length} task(s) spawned`);
+        return;
+      }
+    }
+  } catch (err) {
+    logFn(`Failed to spawn pending tasks: ${err}`);
+  }
+}
+
 async function handleIncomingMessage(thread: any, isNew: boolean) {
   const lastMessage = thread.recentMessages[thread.recentMessages.length - 1];
   if (!lastMessage) return;
@@ -88,6 +186,7 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
   }
 
   if (messageText.trim().toLowerCase() === "/new") {
+    resetSession(channelId, thread.id ?? null);
     await thread.unsubscribe();
     await thread.post("Fresh start! Send me a message to begin a new conversation.");
     return;
@@ -117,19 +216,20 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
     await thread.post(ack);
     try { await thread.startTyping(); } catch {}
 
-    // Start workflow
-    log(`Starting workflow...`);
+    // Start workflow — use session-scoped threadId so /new creates a fresh conversation
+    const sessionThreadId = getSessionThreadId(channelId, thread.id ?? null);
+    log(`Starting workflow...`, { sessionThreadId });
     const run = await start(handleMessageWorkflow, [
       JSON.stringify(thread),
       typeof content === "string" ? content : JSON.stringify(content),
       adapterName,
       channelId,
-      thread.id ?? null,
+      sessionThreadId,
     ]);
 
     // Wait for conversation, then poll for response
     log(`Waiting for conversation...`);
-    const conv = await waitForConversation(adapterName, channelId, thread.id ?? null);
+    const conv = await waitForConversation(adapterName, channelId, sessionThreadId);
 
     if (conv) {
       log(`Found conversation: ${conv.id}`);
@@ -147,6 +247,9 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
           try { await thread.startTyping(); } catch {}
         },
       });
+
+      // Check for pending tasks (doTask stores them as _pendingTasks messages)
+      await spawnPendingTasks(conv.id, adapterName, channelId, log);
     } else {
       log(`No conversation found`);
       await safeSend(thread, "Something went wrong: couldn't create conversation. Check the logs.");

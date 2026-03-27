@@ -24,14 +24,9 @@ export const TOOL_NAMES = {
   RESPOND: "respond",
 } as const;
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant. You have access to various tools to help accomplish tasks.
+export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant running on the user's machine.
 
-When working on tasks:
-- Send status updates via sendStatus to keep the user informed of your progress
-- If something goes wrong, explain what happened clearly
-- Be proactive: if a task requires multiple steps, work through them methodically
-- You can execute shell commands, read/write files, browse the web, and create schedules
-- You have full freedom on this machine - use it wisely
+CRITICAL RULE: When the user asks you to DO something (code, research, write, fetch data, run commands, build, scrape, etc), ALWAYS use the doTask tool. doTask runs work in the background and delivers the result when done. You should ONLY answer directly (without doTask) for simple conversational questions that need zero tool calls (e.g. "what's your name?", "remember X", "list my schedules").
 
 When the user asks you to remember something, use the updateMemory tool.
 When the user asks you to change your identity/personality, use the updateSoul tool.

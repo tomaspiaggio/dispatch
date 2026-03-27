@@ -15,6 +15,7 @@ import { sendStatusStep } from "../steps/send-status";
 import { updateMemoryStep, updateSoulStep, readMemoryFileStep, readSoulFileStep } from "../steps/memory";
 import { logMessageStep } from "../steps/log-message";
 import { createScheduleStep, listSchedulesStep, deleteScheduleStep } from "../steps/schedule";
+import { listSpawnedTasksStep } from "../steps/spawn-task";
 import {
   findOrCreateConversationStep,
   getConversationHistoryStep,
@@ -133,6 +134,29 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
+        doTask: tool({
+          description: "Execute one or more tasks in the background. Each task runs as an independent agent and delivers its result to the chat when done. Can only be called ONCE per message — put ALL tasks in the array. After calling this, respond with a SHORT confirmation and stop.",
+          inputSchema: z.object({
+            tasks: z.array(z.object({
+              name: z.string().describe("Short label for this task, e.g. 'Analyze dispatch project'"),
+              prompt: z.string().describe("Complete self-contained prompt with ALL context needed. The worker has no access to this conversation."),
+            })).min(1).describe("List of tasks to spawn. Each becomes an independent background agent."),
+          }),
+          execute: async ({ tasks }) => {
+            log(`doTask: ${tasks.length} task(s): ${tasks.map(t => t.name).join(", ")}`);
+            return {
+              scheduled: true,
+              count: tasks.length,
+              names: tasks.map(t => t.name),
+              message: `${tasks.length} task(s) will be spawned. Confirm to the user and stop.`,
+            };
+          },
+        }),
+        listSpawnedTasks: tool({
+          description: "List all tasks spawned from this conversation and their status (running/completed). Use when the user asks about running tasks, pending tasks, or wants to check if something finished.",
+          inputSchema: z.object({}),
+          execute: async () => { log(`listSpawnedTasks`); return listSpawnedTasksStep(conversation.id); },
+        }),
         updateMemory: tool({
           description: 'Update the persistent memory file (~/.dispatch/memories.md). A sub-agent will intelligently merge your instruction into the existing memories — resolving contradictions, updating existing entries, or adding new ones. Use for "remember that...", "from now on...", "always do X", "stop doing Y".',
           inputSchema: z.object({ instruction: z.string().describe("What to add, change, or remove from memory") }),
@@ -204,6 +228,7 @@ After calling this tool, confirm to the user with the schedule details (name, wh
       );
       log(`Assistant response saved to DB`);
     }
+
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log(`!!! ERROR: ${errorMessage}`);

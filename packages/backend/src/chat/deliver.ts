@@ -1,6 +1,6 @@
 import { start } from "workflow/api";
 import { handleMessageWorkflow } from "../workflows/handle-message";
-import { waitAndPostResponse, waitForConversation } from "./poll-response";
+import { waitForConversation } from "./poll-response";
 
 function log(msg: string, data?: any) {
   const ts = new Date().toISOString().slice(11, 23);
@@ -49,8 +49,15 @@ async function sendSlack(channelId: string, text: string) {
 
 type DeliverMessage = (message: { role: string; content: string }) => Promise<void>;
 
-export function createDeliveryCallback(platform: string, channelId: string): DeliverMessage {
-  return async ({ content }) => {
+export function createDeliveryCallback(
+  platform: string,
+  channelId: string,
+  options?: { skipStatus?: boolean },
+): DeliverMessage {
+  return async ({ role, content }) => {
+    // Skip status messages (e.g. "Still working on it...") for spawned tasks
+    if (options?.skipStatus && role === "status") return;
+
     try {
       if (platform === "telegram") {
         await sendTelegram(channelId, content);
@@ -66,6 +73,9 @@ export function createDeliveryCallback(platform: string, channelId: string): Del
   };
 }
 
+// Track delivered threadIds to prevent duplicate deliveries
+const deliveredThreads = new Set<string>();
+
 /**
  * Start a workflow with the given prompt and poll for delivery in the background.
  * Returns immediately with { conversationId, runId }.
@@ -77,7 +87,6 @@ export async function executePromptAndDeliver(
   conversationId?: string,
 ) {
   const threadId = conversationId ?? `api-${Date.now()}`;
-  const startTime = new Date();
 
   log(`Starting workflow`, { platform, channelId, threadId, prompt: prompt.slice(0, 80) });
 
@@ -89,23 +98,43 @@ export async function executePromptAndDeliver(
     threadId,
   ]);
 
-  // Background: poll for response and deliver to platform
+  // Background: wait for workflow to complete, then deliver ONLY the final message
   (async () => {
     try {
+      const deliver = createDeliveryCallback(platform, channelId, { skipStatus: true });
+      const MAX_WAIT = 10 * 60_000; // 10 minutes
+      const POLL_INTERVAL = 3_000;
+      const deadline = Date.now() + MAX_WAIT;
+
+      // Wait for workflow to finish
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+        const status = await run.status.catch(() => "unknown" as const);
+        if (status === "completed" || status === "failed" || status === "cancelled") break;
+      }
+
+      // Find the conversation and deliver the last assistant message
       const conv = await waitForConversation(platform, channelId, threadId);
       if (!conv) {
         log(`No conversation found for delivery`, { platform, channelId, threadId });
         return;
       }
 
-      await waitAndPostResponse({
-        conversationId: conv.id,
-        startTime,
-        run,
-        log,
-        timeoutMessage: "The task timed out.",
-        deliverMessage: createDeliveryCallback(platform, channelId),
+      const { prisma } = await import("../lib/prisma");
+      const lastMsg = await prisma.message.findFirst({
+        where: { conversationId: conv.id, role: "assistant" },
+        orderBy: { createdAt: "desc" },
       });
+
+      if (lastMsg?.content && !deliveredThreads.has(threadId)) {
+        deliveredThreads.add(threadId);
+        log(`Delivering final result: ${lastMsg.content.slice(0, 80)}...`);
+        await deliver({ role: "assistant", content: lastMsg.content });
+      } else if (deliveredThreads.has(threadId)) {
+        log(`Already delivered for ${threadId}, skipping`);
+      } else {
+        log(`Workflow finished but no assistant message found`);
+      }
     } catch (err) {
       log(`Background delivery error: ${err}`);
     }
