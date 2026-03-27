@@ -36,9 +36,8 @@ export async function spawnTaskStep(
 
   return {
     spawned: true,
-    conversationId: result.conversationId,
-    runId: result.runId,
-    message: `Task spawned in a separate conversation. It will deliver the result to ${platform}/${channelId} when done.`,
+    taskId: result.conversationId,
+    message: "Task is running in the background. The result will be delivered to the chat when done. DO NOT call doTask again for this request — the task is already running. Just confirm to the user and stop.",
   };
 }
 
