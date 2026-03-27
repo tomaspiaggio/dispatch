@@ -33,8 +33,11 @@ async function tick() {
       });
 
       try {
+        // Add background worker prefix so the agent does the work directly
+        // instead of trying to delegate via doTask
+        const prompt = `IMPORTANT: You are a background worker executing a scheduled task. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — complete the work yourself and respond with the result.\n\n${schedule.prompt}`;
         await executePromptAndDeliver(
-          schedule.prompt,
+          prompt,
           schedule.platform,
           schedule.channelId,
         );
