@@ -98,10 +98,25 @@ async function spawnPendingTasks(
       where: {
         conversationId,
         role: "tool",
-        createdAt: { gte: new Date(Date.now() - 5 * 60_000) }, // last 5 min
       },
       orderBy: { createdAt: "desc" },
+      take: 20,
     });
+
+    // If any doTask was already spawned in this conversation, skip entirely
+    const alreadySpawned = toolMessages.some(
+      (m) => m.content === "__spawned" && (m.toolCalls as any[])?.some((c: any) => c.toolName === "doTask")
+    );
+    if (alreadySpawned) {
+      // Mark any new doTask calls as spawned too (so they don't trigger next time)
+      for (const m of toolMessages) {
+        const calls = m.toolCalls as any[];
+        if (calls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
+          await prisma.message.update({ where: { id: m.id }, data: { content: "__spawned" } });
+        }
+      }
+      return;
+    }
 
     for (const msg of toolMessages) {
       const calls = msg.toolCalls as any[];
@@ -109,30 +124,32 @@ async function spawnPendingTasks(
 
       for (const call of calls) {
         if (call.toolName !== "doTask") continue;
-        if (msg.content === "__spawned") continue; // already processed
+        if (msg.content === "__spawned") continue;
 
         const tasks = call.input?.tasks as { name: string; prompt: string }[] | undefined;
         if (!tasks?.length) continue;
 
         logFn(`Found ${tasks.length} pending doTask task(s)`);
 
-        // Mark as processed FIRST to prevent duplicates
-        await prisma.message.update({
-          where: { id: msg.id },
-          data: { content: "__spawned" },
-        });
+        // Mark ALL doTask messages as processed to prevent re-spawning
+        for (const m of toolMessages) {
+          const mCalls = m.toolCalls as any[];
+          if (mCalls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
+            await prisma.message.update({
+              where: { id: m.id },
+              data: { content: "__spawned" },
+            });
+          }
+        }
 
         for (const task of tasks) {
           logFn(`Spawning: "${task.name}"`);
-          // Prepend instruction to do work directly — without this, the spawned
-          // agent reads the system prompt ("use doTask for any work") and tries
-          // to spawn yet another sub-agent instead of doing the work itself.
           const prompt = `IMPORTANT: You are a background worker. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — you ARE the task. Complete the work and respond with the result.\n\n${task.prompt}`;
           await executePromptAndDeliver(prompt, platform, channelId);
         }
 
         logFn(`All ${tasks.length} task(s) spawned`);
-        return; // only process one doTask call
+        return;
       }
     }
   } catch (err) {
