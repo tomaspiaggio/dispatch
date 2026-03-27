@@ -7,6 +7,8 @@ import { generateText } from "ai";
 import { waitAndPostResponse, waitForConversation } from "./poll-response";
 
 import { MODELS } from "@dispatch/shared";
+import { prisma } from "../lib/prisma";
+import { executePromptAndDeliver } from "./deliver";
 
 // Track conversation sessions — /new generates a fresh session so messages
 // go to a new DB conversation instead of accumulating in the old one.
@@ -81,6 +83,47 @@ async function safeSend(thread: any, text: string) {
     } catch (err) {
       log(`safeSend failed completely: ${err}`);
     }
+  }
+}
+
+async function spawnPendingTasks(
+  conversationId: string,
+  platform: string,
+  channelId: string,
+  logFn: typeof log,
+) {
+  try {
+    // Find _pendingTasks messages (doTask stores tasks here)
+    const pendingMsg = await prisma.message.findFirst({
+      where: {
+        conversationId,
+        role: "tool",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!pendingMsg) return;
+    const calls = pendingMsg.toolCalls as any[];
+    if (!calls?.some((c: any) => c.toolName === "_pendingTasks")) return;
+    if (!pendingMsg.content) return;
+
+    const tasks = JSON.parse(pendingMsg.content) as { name: string; prompt: string }[];
+    logFn(`Spawning ${tasks.length} pending task(s) from doTask`);
+
+    for (const task of tasks) {
+      logFn(`Spawning: "${task.name}"`);
+      await executePromptAndDeliver(task.prompt, platform, channelId);
+    }
+
+    // Mark as processed by clearing content
+    await prisma.message.update({
+      where: { id: pendingMsg.id },
+      data: { content: null },
+    });
+
+    logFn(`All ${tasks.length} task(s) spawned`);
+  } catch (err) {
+    logFn(`Failed to spawn pending tasks: ${err}`);
   }
 }
 
@@ -164,6 +207,9 @@ async function handleIncomingMessage(thread: any, isNew: boolean) {
           try { await thread.startTyping(); } catch {}
         },
       });
+
+      // Check for pending tasks (doTask stores them as _pendingTasks messages)
+      await spawnPendingTasks(conv.id, adapterName, channelId, log);
     } else {
       log(`No conversation found`);
       await safeSend(thread, "Something went wrong: couldn't create conversation. Check the logs.");

@@ -15,7 +15,7 @@ import { sendStatusStep } from "../steps/send-status";
 import { updateMemoryStep, updateSoulStep, readMemoryFileStep, readSoulFileStep } from "../steps/memory";
 import { logMessageStep } from "../steps/log-message";
 import { createScheduleStep, listSchedulesStep, deleteScheduleStep } from "../steps/schedule";
-import { spawnTasksStep, listSpawnedTasksStep } from "../steps/spawn-task";
+import { listSpawnedTasksStep } from "../steps/spawn-task";
 import {
   findOrCreateConversationStep,
   getConversationHistoryStep,
@@ -55,10 +55,6 @@ export async function handleMessageWorkflow(
 
     const systemPrompt = await getSystemPromptStep();
     log(`System prompt: ${systemPrompt.length} chars`);
-
-    // doTask stores tasks here; they are spawned AFTER the agent finishes
-    // to avoid duplicate spawns from workflow replays inside the agent loop.
-    let pendingTasks: { name: string; prompt: string }[] | null = null;
 
     const agent = new DurableAgent({
       model: google(MODELS.AGENT) as any,
@@ -148,12 +144,13 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ tasks }) => {
             log(`doTask: ${tasks.length} task(s): ${tasks.map(t => t.name).join(", ")}`);
-            pendingTasks = tasks;
+            // Store tasks in DB — the chat handler will spawn them after this workflow completes
+            await logMessageStep(conversation.id, "tool", JSON.stringify(tasks), [{ toolName: "_pendingTasks" }]);
             return {
               scheduled: true,
               count: tasks.length,
               names: tasks.map(t => t.name),
-              message: `${tasks.length} task(s) will be spawned after you respond. Confirm to the user and stop.`,
+              message: `${tasks.length} task(s) will be spawned. Confirm to the user and stop.`,
             };
           },
         }),
@@ -234,12 +231,6 @@ After calling this tool, confirm to the user with the schedule details (name, wh
       log(`Assistant response saved to DB`);
     }
 
-    // Spawn any pending tasks AFTER the agent is done (avoids duplicate spawns from replays)
-    if (pendingTasks && pendingTasks.length > 0) {
-      log(`Spawning ${pendingTasks.length} pending task(s)...`);
-      await spawnTasksStep(pendingTasks, platform, channelId, conversation.id);
-      log(`All tasks spawned`);
-    }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log(`!!! ERROR: ${errorMessage}`);
