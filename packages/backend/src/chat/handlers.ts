@@ -124,7 +124,11 @@ async function spawnPendingTasks(
 
         for (const task of tasks) {
           logFn(`Spawning: "${task.name}"`);
-          await executePromptAndDeliver(task.prompt, platform, channelId);
+          // Prepend instruction to do work directly — without this, the spawned
+          // agent reads the system prompt ("use doTask for any work") and tries
+          // to spawn yet another sub-agent instead of doing the work itself.
+          const prompt = `IMPORTANT: You are a background worker. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — you ARE the task. Complete the work and respond with the result.\n\n${task.prompt}`;
+          await executePromptAndDeliver(prompt, platform, channelId);
         }
 
         logFn(`All ${tasks.length} task(s) spawned`);
