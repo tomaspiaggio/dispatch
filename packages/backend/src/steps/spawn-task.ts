@@ -8,6 +8,23 @@ export async function spawnTaskStep(
 ) {
   "use step";
 
+  // Guard: only allow one spawned task per conversation per 60 seconds
+  const recentSpawn = await prisma.message.findFirst({
+    where: {
+      conversationId: parentConversationId,
+      role: "tool",
+      createdAt: { gte: new Date(Date.now() - 60_000) },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (recentSpawn) {
+    const calls = recentSpawn.toolCalls as any[];
+    if (calls?.some((c: any) => c.toolName === "_spawnedTask")) {
+      return { error: "A task was already spawned. Just confirm to the user and stop." };
+    }
+  }
+
   // Call the HTTP endpoint instead of importing deliver.ts directly,
   // because this step runs inside the workflow sandbox where workflow
   // module imports don't resolve correctly.
@@ -37,7 +54,7 @@ export async function spawnTaskStep(
   return {
     spawned: true,
     taskId: result.conversationId,
-    message: "Task is running in the background. The result will be delivered to the chat when done. DO NOT call doTask again for this request — the task is already running. Just confirm to the user and stop.",
+    message: "Task is running in the background. The result will be delivered when done.",
   };
 }
 
