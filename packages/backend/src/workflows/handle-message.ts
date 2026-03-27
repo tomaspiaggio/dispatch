@@ -56,6 +56,10 @@ export async function handleMessageWorkflow(
     const systemPrompt = await getSystemPromptStep();
     log(`System prompt: ${systemPrompt.length} chars`);
 
+    // doTask stores tasks here; they are spawned AFTER the agent finishes
+    // to avoid duplicate spawns from workflow replays inside the agent loop.
+    let pendingTasks: { name: string; prompt: string }[] | null = null;
+
     const agent = new DurableAgent({
       model: google(MODELS.AGENT) as any,
       instructions: systemPrompt,
@@ -144,7 +148,13 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ tasks }) => {
             log(`doTask: ${tasks.length} task(s): ${tasks.map(t => t.name).join(", ")}`);
-            return spawnTasksStep(tasks, platform, channelId, conversation.id);
+            pendingTasks = tasks;
+            return {
+              scheduled: true,
+              count: tasks.length,
+              names: tasks.map(t => t.name),
+              message: `${tasks.length} task(s) will be spawned after you respond. Confirm to the user and stop.`,
+            };
           },
         }),
         listSpawnedTasks: tool({
@@ -222,6 +232,13 @@ After calling this tool, confirm to the user with the schedule details (name, wh
         totalUsage
       );
       log(`Assistant response saved to DB`);
+    }
+
+    // Spawn any pending tasks AFTER the agent is done (avoids duplicate spawns from replays)
+    if (pendingTasks && pendingTasks.length > 0) {
+      log(`Spawning ${pendingTasks.length} pending task(s)...`);
+      await spawnTasksStep(pendingTasks, platform, channelId, conversation.id);
+      log(`All tasks spawned`);
     }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
