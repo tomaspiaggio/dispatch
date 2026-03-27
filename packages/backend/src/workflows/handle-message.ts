@@ -134,16 +134,23 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
-        doTask: tool({
-          description: "Execute a task in the background. The result is delivered to the chat when done. Use this for any user request that requires work (coding, research, file operations, web scraping, writing, running commands, etc). Only skip this tool for simple questions that need zero tool calls. IMPORTANT: Call this ONCE per user request, then immediately respond to the user confirming the task was started. Never call doTask multiple times for the same request.",
-          inputSchema: z.object({
-            taskPrompt: z.string().describe("Complete self-contained prompt. Include ALL context — the background worker has no access to this conversation. Copy any relevant details, file paths, URLs, and requirements from the user's message."),
-          }),
-          execute: async ({ taskPrompt }) => {
-            log(`doTask: "${taskPrompt.slice(0, 80)}"`);
-            return spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
-          },
-        }),
+        doTask: (() => {
+          let called = false;
+          return tool({
+            description: "Execute a task in the background. The result is delivered to the chat when done. Use for any user request that requires work. Can only be called once per message.",
+            inputSchema: z.object({
+              taskPrompt: z.string().describe("Complete self-contained prompt with ALL context needed."),
+            }),
+            execute: async ({ taskPrompt }) => {
+              if (called) {
+                return { error: "Task already spawned. Just confirm to the user and finish your response." };
+              }
+              called = true;
+              log(`doTask: "${taskPrompt.slice(0, 80)}"`);
+              return spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
+            },
+          });
+        })(),
         listSpawnedTasks: tool({
           description: "List all tasks spawned from this conversation and their status (running/completed). Use when the user asks about running tasks, pending tasks, or wants to check if something finished.",
           inputSchema: z.object({}),
