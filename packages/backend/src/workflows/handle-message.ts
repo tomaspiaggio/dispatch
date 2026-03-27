@@ -56,6 +56,8 @@ export async function handleMessageWorkflow(
     const systemPrompt = await getSystemPromptStep();
     log(`System prompt: ${systemPrompt.length} chars`);
 
+    let doTaskCalled = false;
+
     const agent = new DurableAgent({
       model: google(MODELS.AGENT) as any,
       instructions: systemPrompt,
@@ -134,23 +136,23 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
-        doTask: (() => {
-          let called = false;
-          return tool({
-            description: "Execute a task in the background. The result is delivered to the chat when done. Use for any user request that requires work. Can only be called once per message.",
-            inputSchema: z.object({
-              taskPrompt: z.string().describe("Complete self-contained prompt with ALL context needed."),
-            }),
-            execute: async ({ taskPrompt }) => {
-              if (called) {
-                return { error: "Task already spawned. Just confirm to the user and finish your response." };
-              }
-              called = true;
-              log(`doTask: "${taskPrompt.slice(0, 80)}"`);
-              return spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
-            },
-          });
-        })(),
+        doTask: tool({
+          description: "Execute a task in the background. The result is delivered to the chat when done. Use for any user request that requires work. Can only be called once per message.",
+          inputSchema: z.object({
+            taskPrompt: z.string().describe("Complete self-contained prompt with ALL context needed."),
+          }),
+          execute: async ({ taskPrompt }) => {
+            if (doTaskCalled) {
+              return { error: "Task already spawned." };
+            }
+            doTaskCalled = true;
+            log(`doTask: "${taskPrompt.slice(0, 80)}"`);
+            const result = await spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
+            // Save confirmation immediately so the user sees it right away
+            await logMessageStep(conversation.id, "assistant", `Task started — I'll deliver the result here when it's done.`);
+            return result;
+          },
+        }),
         listSpawnedTasks: tool({
           description: "List all tasks spawned from this conversation and their status (running/completed). Use when the user asks about running tasks, pending tasks, or wants to check if something finished.",
           inputSchema: z.object({}),
@@ -219,13 +221,15 @@ After calling this tool, confirm to the user with the schedule details (name, wh
 
     log(`<<< Agent finished`, { steps: result.steps.length, tokens: totalUsage.total, text: finalText.slice(0, 120) });
 
-    if (finalText) {
+    if (finalText && !doTaskCalled) {
       await logMessageStep(
         conversation.id, "assistant", finalText, null,
         typeof lastStep?.reasoning === "string" ? lastStep.reasoning : null,
         totalUsage
       );
       log(`Assistant response saved to DB`);
+    } else if (doTaskCalled) {
+      log(`Skipping final text save — doTask already sent confirmation`);
     }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
