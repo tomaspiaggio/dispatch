@@ -144,8 +144,6 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           }),
           execute: async ({ tasks }) => {
             log(`doTask: ${tasks.length} task(s): ${tasks.map(t => t.name).join(", ")}`);
-            // Store tasks in DB — the chat handler will spawn them after this workflow completes
-            await logMessageStep(conversation.id, "tool", JSON.stringify(tasks), [{ toolName: "_pendingTasks" }]);
             return {
               scheduled: true,
               count: tasks.length,

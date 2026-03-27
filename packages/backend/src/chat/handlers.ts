@@ -93,35 +93,44 @@ async function spawnPendingTasks(
   logFn: typeof log,
 ) {
   try {
-    // Find _pendingTasks messages (doTask stores tasks here)
-    const pendingMsg = await prisma.message.findFirst({
+    // Find doTask tool calls — the tasks are in toolCalls[].input.tasks
+    const toolMessages = await prisma.message.findMany({
       where: {
         conversationId,
         role: "tool",
+        createdAt: { gte: new Date(Date.now() - 5 * 60_000) }, // last 5 min
       },
       orderBy: { createdAt: "desc" },
     });
 
-    if (!pendingMsg) return;
-    const calls = pendingMsg.toolCalls as any[];
-    if (!calls?.some((c: any) => c.toolName === "_pendingTasks")) return;
-    if (!pendingMsg.content) return;
+    for (const msg of toolMessages) {
+      const calls = msg.toolCalls as any[];
+      if (!calls) continue;
 
-    const tasks = JSON.parse(pendingMsg.content) as { name: string; prompt: string }[];
-    logFn(`Spawning ${tasks.length} pending task(s) from doTask`);
+      for (const call of calls) {
+        if (call.toolName !== "doTask") continue;
+        if (msg.content === "__spawned") continue; // already processed
 
-    for (const task of tasks) {
-      logFn(`Spawning: "${task.name}"`);
-      await executePromptAndDeliver(task.prompt, platform, channelId);
+        const tasks = call.input?.tasks as { name: string; prompt: string }[] | undefined;
+        if (!tasks?.length) continue;
+
+        logFn(`Found ${tasks.length} pending doTask task(s)`);
+
+        // Mark as processed FIRST to prevent duplicates
+        await prisma.message.update({
+          where: { id: msg.id },
+          data: { content: "__spawned" },
+        });
+
+        for (const task of tasks) {
+          logFn(`Spawning: "${task.name}"`);
+          await executePromptAndDeliver(task.prompt, platform, channelId);
+        }
+
+        logFn(`All ${tasks.length} task(s) spawned`);
+        return; // only process one doTask call
+      }
     }
-
-    // Mark as processed by clearing content
-    await prisma.message.update({
-      where: { id: pendingMsg.id },
-      data: { content: null },
-    });
-
-    logFn(`All ${tasks.length} task(s) spawned`);
   } catch (err) {
     logFn(`Failed to spawn pending tasks: ${err}`);
   }
