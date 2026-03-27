@@ -103,31 +103,8 @@ async function spawnPendingTasks(
       take: 20,
     });
 
-    // If any doTask was already spawned in this conversation, skip entirely
-    const doTaskMessages = toolMessages.filter(
-      (m) => (m.toolCalls as any[])?.some((c: any) => c.toolName === "doTask")
-    );
-    const alreadySpawned = doTaskMessages.some((m) => m.content === "__spawned");
-
-    logFn(`spawnPendingTasks: ${doTaskMessages.length} doTask message(s), alreadySpawned=${alreadySpawned}`);
-
-    if (alreadySpawned) {
-      // Mark any new doTask calls as spawned too
-      for (const m of doTaskMessages) {
-        if (m.content !== "__spawned") {
-          logFn(`Marking duplicate doTask as __spawned: ${m.id}`);
-          await prisma.message.update({ where: { id: m.id }, data: { content: "__spawned" } });
-        }
-      }
-      logFn(`Already spawned, skipping`);
-      return;
-    }
-
-    if (doTaskMessages.length === 0) {
-      logFn(`No doTask messages found, nothing to spawn`);
-      return;
-    }
-
+    // Find the most recent unprocessed doTask call
+    // Messages are ordered by createdAt DESC, so the first match is the newest
     for (const msg of toolMessages) {
       const calls = msg.toolCalls as any[];
       if (!calls) continue;
@@ -139,23 +116,30 @@ async function spawnPendingTasks(
         const tasks = call.input?.tasks as { name: string; prompt: string }[] | undefined;
         if (!tasks?.length) continue;
 
-        logFn(`Found ${tasks.length} pending doTask task(s)`);
+        logFn(`Found ${tasks.length} pending doTask task(s) in message ${msg.id}`);
 
-        // Mark ALL doTask messages as processed to prevent re-spawning
-        for (const m of toolMessages) {
-          const mCalls = m.toolCalls as any[];
-          if (mCalls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
-            await prisma.message.update({
-              where: { id: m.id },
-              data: { content: "__spawned" },
-            });
-          }
-        }
+        // Mark THIS message as processed immediately
+        await prisma.message.update({
+          where: { id: msg.id },
+          data: { content: "__spawned" },
+        });
 
         for (const task of tasks) {
           logFn(`Spawning: "${task.name}"`);
           const prompt = `IMPORTANT: You are a background worker. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — you ARE the task. Complete the work and respond with the result.\n\n${task.prompt}`;
           await executePromptAndDeliver(prompt, platform, channelId);
+        }
+
+        // Mark any other doTask messages created within 60s as duplicates (from workflow replays)
+        for (const m of toolMessages) {
+          if (m.id === msg.id) continue;
+          const mCalls = m.toolCalls as any[];
+          if (mCalls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
+            const timeDiff = Math.abs(msg.createdAt.getTime() - m.createdAt.getTime());
+            if (timeDiff < 60_000) {
+              await prisma.message.update({ where: { id: m.id }, data: { content: "__spawned" } });
+            }
+          }
         }
 
         logFn(`All ${tasks.length} task(s) spawned`);
