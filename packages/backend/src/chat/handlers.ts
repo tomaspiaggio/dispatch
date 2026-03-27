@@ -104,17 +104,27 @@ async function spawnPendingTasks(
     });
 
     // If any doTask was already spawned in this conversation, skip entirely
-    const alreadySpawned = toolMessages.some(
-      (m) => m.content === "__spawned" && (m.toolCalls as any[])?.some((c: any) => c.toolName === "doTask")
+    const doTaskMessages = toolMessages.filter(
+      (m) => (m.toolCalls as any[])?.some((c: any) => c.toolName === "doTask")
     );
+    const alreadySpawned = doTaskMessages.some((m) => m.content === "__spawned");
+
+    logFn(`spawnPendingTasks: ${doTaskMessages.length} doTask message(s), alreadySpawned=${alreadySpawned}`);
+
     if (alreadySpawned) {
-      // Mark any new doTask calls as spawned too (so they don't trigger next time)
-      for (const m of toolMessages) {
-        const calls = m.toolCalls as any[];
-        if (calls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
+      // Mark any new doTask calls as spawned too
+      for (const m of doTaskMessages) {
+        if (m.content !== "__spawned") {
+          logFn(`Marking duplicate doTask as __spawned: ${m.id}`);
           await prisma.message.update({ where: { id: m.id }, data: { content: "__spawned" } });
         }
       }
+      logFn(`Already spawned, skipping`);
+      return;
+    }
+
+    if (doTaskMessages.length === 0) {
+      logFn(`No doTask messages found, nothing to spawn`);
       return;
     }
 
