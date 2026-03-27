@@ -35,9 +35,6 @@ app.all("/trpc/*", (c) => {
   });
 });
 
-// Rate limit spawned tasks per channel — prevents the agent from spawning dozens
-const recentSpawns = new Map<string, number>(); // channelId -> last spawn timestamp
-
 // POST /api/prompt — external trigger for workflows (curl, cron, integrations)
 app.post("/api/prompt", async (c) => {
   const body = await c.req.json<{
@@ -51,23 +48,11 @@ app.post("/api/prompt", async (c) => {
     return c.json({ error: "prompt is required" }, 400);
   }
 
-  const channelId = body.channelId ?? "api";
-
-  // Rate limit: max 1 spawn per channel per 30 seconds (skip for scheduler/external)
-  const isInternal = c.req.header("x-source") !== "external";
-  if (isInternal) {
-    const lastSpawn = recentSpawns.get(channelId) ?? 0;
-    if (Date.now() - lastSpawn < 30_000) {
-      return c.json({ error: "A task was recently spawned for this channel. Please wait." }, 429);
-    }
-    recentSpawns.set(channelId, Date.now());
-  }
-
   const { executePromptAndDeliver } = await import("./chat/deliver");
   const result = await executePromptAndDeliver(
     body.prompt,
     body.platform ?? "web",
-    channelId,
+    body.channelId ?? "api",
     body.conversationId,
   );
 

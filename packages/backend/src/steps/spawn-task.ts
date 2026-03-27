@@ -1,53 +1,62 @@
 import { prisma } from "../lib/prisma";
 
-export async function spawnTaskStep(
-  prompt: string,
+export async function spawnTasksStep(
+  tasks: { name: string; prompt: string }[],
   platform: string,
   channelId: string,
   parentConversationId: string,
 ) {
   "use step";
 
-  const res = await fetch("http://localhost:3000/api/prompt", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, platform, channelId }),
-  });
+  const results: { name: string; taskId: string; status: string }[] = [];
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Request failed" })) as { error: string };
-    return { error: err.error ?? "Failed to spawn task." };
+  for (const task of tasks) {
+    const res = await fetch("http://localhost:3000/api/prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: task.prompt, platform, channelId }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Request failed" })) as { error: string };
+      results.push({ name: task.name, taskId: "", status: `error: ${err.error}` });
+      continue;
+    }
+
+    const result = await res.json() as { conversationId: string; runId: string };
+
+    // Track the spawned task
+    await prisma.message.create({
+      data: {
+        conversationId: parentConversationId,
+        role: "tool",
+        content: null,
+        toolCalls: [{
+          toolName: "_spawnedTask",
+          spawnedConversationId: result.conversationId,
+          runId: result.runId,
+          name: task.name,
+          prompt: task.prompt.slice(0, 200),
+          spawnedAt: new Date().toISOString(),
+        }] as any,
+      },
+    });
+
+    results.push({ name: task.name, taskId: result.conversationId, status: "spawned" });
   }
 
-  const result = await res.json() as { conversationId: string; runId: string };
-
-  // Track the spawned task so we can query its status later
-  await prisma.message.create({
-    data: {
-      conversationId: parentConversationId,
-      role: "tool",
-      content: null,
-      toolCalls: [{
-        toolName: "_spawnedTask",
-        spawnedConversationId: result.conversationId,
-        runId: result.runId,
-        prompt: prompt.slice(0, 200),
-        spawnedAt: new Date().toISOString(),
-      }] as any,
-    },
-  });
-
+  const spawned = results.filter(r => r.status === "spawned").length;
   return {
-    spawned: true,
-    taskId: result.conversationId,
-    message: "Task is running in the background. The result will be delivered when done.",
+    spawned: spawned,
+    total: tasks.length,
+    tasks: results,
+    message: `${spawned}/${tasks.length} task(s) spawned. Results will be delivered to the chat as they complete.`,
   };
 }
 
 export async function listSpawnedTasksStep(parentConversationId: string) {
   "use step";
 
-  // Find _spawnedTask records from the last hour
   const since = new Date(Date.now() - 60 * 60 * 1000);
   const taskMessages = await prisma.message.findMany({
     where: {
@@ -59,6 +68,7 @@ export async function listSpawnedTasksStep(parentConversationId: string) {
   });
 
   const tasks: {
+    name: string;
     id: string;
     prompt: string;
     spawnedAt: string;
@@ -71,7 +81,6 @@ export async function listSpawnedTasksStep(parentConversationId: string) {
     for (const call of calls) {
       if (call.toolName !== "_spawnedTask") continue;
 
-      // Find the spawned conversation by threadId
       const spawnedConv = await prisma.conversation.findFirst({
         where: { threadId: call.spawnedConversationId },
       });
@@ -89,6 +98,7 @@ export async function listSpawnedTasksStep(parentConversationId: string) {
       }
 
       tasks.push({
+        name: call.name ?? "unnamed",
         id: call.spawnedConversationId,
         prompt: call.prompt,
         spawnedAt: call.spawnedAt,
@@ -99,7 +109,7 @@ export async function listSpawnedTasksStep(parentConversationId: string) {
   }
 
   if (tasks.length === 0) {
-    return { tasks: [], message: "No spawned tasks found in this conversation." };
+    return { tasks: [], message: "No spawned tasks found." };
   }
 
   const running = tasks.filter((t) => t.status === "running").length;
@@ -107,6 +117,6 @@ export async function listSpawnedTasksStep(parentConversationId: string) {
 
   return {
     tasks,
-    message: `${tasks.length} spawned task(s): ${running} running, ${completed} completed.`,
+    message: `${tasks.length} task(s): ${running} running, ${completed} completed.`,
   };
 }

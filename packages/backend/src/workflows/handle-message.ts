@@ -15,7 +15,7 @@ import { sendStatusStep } from "../steps/send-status";
 import { updateMemoryStep, updateSoulStep, readMemoryFileStep, readSoulFileStep } from "../steps/memory";
 import { logMessageStep } from "../steps/log-message";
 import { createScheduleStep, listSchedulesStep, deleteScheduleStep } from "../steps/schedule";
-import { spawnTaskStep, listSpawnedTasksStep } from "../steps/spawn-task";
+import { spawnTasksStep, listSpawnedTasksStep } from "../steps/spawn-task";
 import {
   findOrCreateConversationStep,
   getConversationHistoryStep,
@@ -135,13 +135,16 @@ After calling this tool, confirm to the user with the schedule details (name, wh
           execute: async ({ scheduleId }) => { log(`deleteSchedule: ${scheduleId}`); return deleteScheduleStep(scheduleId); },
         }),
         doTask: tool({
-          description: "Execute a task in the background. The result is delivered to the chat when done. Use for any user request that requires work. Can only be called once — after calling this, respond with a SHORT confirmation and stop.",
+          description: "Execute one or more tasks in the background. Each task runs as an independent agent and delivers its result to the chat when done. Can only be called ONCE per message — put ALL tasks in the array. After calling this, respond with a SHORT confirmation and stop.",
           inputSchema: z.object({
-            taskPrompt: z.string().describe("Complete self-contained prompt with ALL context needed."),
+            tasks: z.array(z.object({
+              name: z.string().describe("Short label for this task, e.g. 'Analyze dispatch project'"),
+              prompt: z.string().describe("Complete self-contained prompt with ALL context needed. The worker has no access to this conversation."),
+            })).min(1).describe("List of tasks to spawn. Each becomes an independent background agent."),
           }),
-          execute: async ({ taskPrompt }) => {
-            log(`doTask: "${taskPrompt.slice(0, 80)}"`);
-            return spawnTaskStep(taskPrompt, platform, channelId, conversation.id);
+          execute: async ({ tasks }) => {
+            log(`doTask: ${tasks.length} task(s): ${tasks.map(t => t.name).join(", ")}`);
+            return spawnTasksStep(tasks, platform, channelId, conversation.id);
           },
         }),
         listSpawnedTasks: tool({
