@@ -11,18 +11,43 @@ function log(msg: string, data?: any) {
   }
 }
 
-async function sendTelegram(chatId: string, text: string) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+const TELEGRAM_MAX_LENGTH = 4096;
 
+function splitMessage(text: string, maxLen: number): string[] {
+  if (text.length <= maxLen) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try to split at a newline near the limit
+    let splitIdx = remaining.lastIndexOf("\n", maxLen);
+    if (splitIdx < maxLen * 0.5) {
+      // No good newline break — split at a space
+      splitIdx = remaining.lastIndexOf(" ", maxLen);
+    }
+    if (splitIdx < maxLen * 0.3) {
+      // No good break point — hard split
+      splitIdx = maxLen;
+    }
+
+    chunks.push(remaining.slice(0, splitIdx));
+    remaining = remaining.slice(splitIdx).trimStart();
+  }
+
+  return chunks;
+}
+
+async function sendTelegramChunk(token: string, chatId: string, text: string) {
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "Markdown",
-    }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
   });
 
   if (!res.ok) {
@@ -35,6 +60,16 @@ async function sendTelegram(chatId: string, text: string) {
     if (!retry.ok) {
       log(`Telegram send failed: ${retry.status} ${await retry.text()}`);
     }
+  }
+}
+
+async function sendTelegram(chatId: string, text: string) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+
+  const chunks = splitMessage(text, TELEGRAM_MAX_LENGTH);
+  for (const chunk of chunks) {
+    await sendTelegramChunk(token, chatId, chunk);
   }
 }
 
