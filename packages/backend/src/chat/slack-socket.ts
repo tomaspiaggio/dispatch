@@ -3,6 +3,8 @@ import { WebClient } from "@slack/web-api";
 import { start } from "workflow/api";
 import { handleMessageWorkflow } from "../workflows/handle-message";
 import { waitAndPostResponse, waitForConversation } from "./poll-response";
+import { prisma } from "../lib/prisma";
+import { executePromptAndDeliver } from "./deliver";
 
 let socketClient: SocketModeClient | null = null;
 let webClient: WebClient | null = null;
@@ -111,22 +113,28 @@ export async function startSlackSocketMode() {
 
   // Slash commands
   socketClient.on("slash_commands", async ({ body, ack }: any) => {
-    await ack();
     log(`Slash: ${body.command}`, { user: body.user_id, channel: body.channel_id, text: body.text });
 
     if (body.command === "/new") {
-      await postMessage(body.channel_id, "Fresh start!");
+      // Acknowledge with visible message so the command isn't silently eaten
+      await ack({ response_type: "in_channel", text: "/new" });
+      await postMessage(body.channel_id, "Fresh start! Send me a message to begin a new conversation.");
       return;
     }
 
     if (body.command === "/dispatch") {
       const text = body.text?.trim();
       if (!text) {
-        await postMessage(body.channel_id, "Usage: `/dispatch <message>`");
+        await ack({ response_type: "ephemeral", text: "Usage: `/dispatch <message>`" });
         return;
       }
+      // Echo the user's message so it's visible in the channel
+      await ack({ response_type: "in_channel", text: text });
       await handleSlackMessage(body.channel_id, text);
+      return;
     }
+
+    await ack();
   });
 
   // Use ONLY slack_event — this is the canonical event listener for Socket Mode
@@ -163,6 +171,61 @@ export async function startSlackSocketMode() {
 
   await socketClient.start();
   log(`Socket Mode connected`);
+}
+
+async function spawnPendingTasks(
+  conversationId: string,
+  platform: string,
+  channelId: string,
+  logFn: typeof log,
+) {
+  try {
+    const toolMessages = await prisma.message.findMany({
+      where: { conversationId, role: "tool" },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+
+    for (const msg of toolMessages) {
+      const calls = msg.toolCalls as any[];
+      if (!calls) continue;
+
+      for (const call of calls) {
+        if (call.toolName !== "doTask") continue;
+        if (msg.content === "__spawned") continue;
+
+        const tasks = call.input?.tasks as { name: string; prompt: string }[] | undefined;
+        if (!tasks?.length) continue;
+
+        logFn(`Found ${tasks.length} pending doTask task(s)`);
+
+        await prisma.message.update({ where: { id: msg.id }, data: { content: "__spawned" } });
+
+        for (const task of tasks) {
+          logFn(`Spawning: "${task.name}"`);
+          const prompt = `IMPORTANT: You are a background worker. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — you ARE the task. Complete the work and respond with the result.\n\n${task.prompt}`;
+          await executePromptAndDeliver(prompt, platform, channelId);
+        }
+
+        // Mark nearby duplicates
+        for (const m of toolMessages) {
+          if (m.id === msg.id) continue;
+          const mCalls = m.toolCalls as any[];
+          if (mCalls?.some((c: any) => c.toolName === "doTask") && m.content !== "__spawned") {
+            const timeDiff = Math.abs(msg.createdAt.getTime() - m.createdAt.getTime());
+            if (timeDiff < 60_000) {
+              await prisma.message.update({ where: { id: m.id }, data: { content: "__spawned" } });
+            }
+          }
+        }
+
+        logFn(`All ${tasks.length} task(s) spawned`);
+        return;
+      }
+    }
+  } catch (err) {
+    logFn(`Failed to spawn pending tasks: ${err}`);
+  }
 }
 
 async function handleSlackMessage(
@@ -203,6 +266,9 @@ async function handleSlackMessage(
           await postMessage(channelId, text, threadTs);
         },
       });
+
+      // Spawn pending doTask tasks
+      await spawnPendingTasks(conv.id, "slack", channelId, log);
     } else {
       await postMessage(channelId, "Something went wrong: couldn't create conversation.", threadTs);
     }
