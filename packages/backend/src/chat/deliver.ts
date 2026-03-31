@@ -73,13 +73,24 @@ async function sendTelegram(chatId: string, text: string) {
   }
 }
 
-async function sendSlack(channelId: string, text: string) {
+function markdownToSlack(text: string): string {
+  // Convert **bold** to *bold* (Slack uses single asterisks)
+  return text.replace(/\*\*(.+?)\*\*/g, "*$1*");
+}
+
+async function sendSlack(channelId: string, text: string, threadTs?: string) {
   const token = process.env.SLACK_BOT_TOKEN;
   if (!token) throw new Error("SLACK_BOT_TOKEN not set");
 
+  const slackText = markdownToSlack(text);
   const { WebClient } = await import("@slack/web-api");
   const client = new WebClient(token);
-  await client.chat.postMessage({ channel: channelId, text, mrkdwn: true });
+  await client.chat.postMessage({
+    channel: channelId,
+    text: slackText,
+    mrkdwn: true,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
+  });
 }
 
 type DeliverMessage = (message: { role: string; content: string }) => Promise<void>;
@@ -87,19 +98,17 @@ type DeliverMessage = (message: { role: string; content: string }) => Promise<vo
 export function createDeliveryCallback(
   platform: string,
   channelId: string,
-  options?: { skipStatus?: boolean },
+  options?: { skipStatus?: boolean; threadTs?: string },
 ): DeliverMessage {
   return async ({ role, content }) => {
-    // Skip status messages (e.g. "Still working on it...") for spawned tasks
     if (options?.skipStatus && role === "status") return;
 
     try {
       if (platform === "telegram") {
         await sendTelegram(channelId, content);
       } else if (platform === "slack") {
-        await sendSlack(channelId, content);
+        await sendSlack(channelId, content, options?.threadTs);
       } else {
-        // web/api — no push delivery, clients poll via SSE/tRPC
         log(`No push delivery for platform "${platform}"`);
       }
     } catch (err) {
@@ -120,6 +129,7 @@ export async function executePromptAndDeliver(
   platform: string,
   channelId: string,
   conversationId?: string,
+  options?: { threadTs?: string },
 ) {
   const threadId = conversationId ?? `api-${Date.now()}`;
 
@@ -136,7 +146,7 @@ export async function executePromptAndDeliver(
   // Background: wait for workflow to complete, then deliver ONLY the final message
   (async () => {
     try {
-      const deliver = createDeliveryCallback(platform, channelId, { skipStatus: true });
+      const deliver = createDeliveryCallback(platform, channelId, { skipStatus: true, threadTs: options?.threadTs });
       const MAX_WAIT = 10 * 60_000; // 10 minutes
       const POLL_INTERVAL = 3_000;
       const deadline = Date.now() + MAX_WAIT;

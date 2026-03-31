@@ -18,12 +18,16 @@ function log(msg: string, data?: any) {
   }
 }
 
+function markdownToSlack(text: string): string {
+  return text.replace(/\*\*(.+?)\*\*/g, "*$1*");
+}
+
 async function postMessage(channel: string, text: string, threadTs?: string) {
   if (!webClient) return;
   try {
     await webClient.chat.postMessage({
       channel,
-      text,
+      text: markdownToSlack(text),
       mrkdwn: true,
       ...(threadTs ? { thread_ts: threadTs } : {}),
     });
@@ -179,6 +183,7 @@ async function spawnPendingTasks(
   platform: string,
   channelId: string,
   logFn: typeof log,
+  threadTs?: string,
 ) {
   try {
     const toolMessages = await prisma.message.findMany({
@@ -205,7 +210,7 @@ async function spawnPendingTasks(
         for (const task of tasks) {
           logFn(`Spawning: "${task.name}"`);
           const prompt = `IMPORTANT: You are a background worker. Do the work directly using your tools (bash, readFile, writeFile, webFetch, etc). Do NOT use doTask — you ARE the task. Complete the work and respond with the result.\n\n${task.prompt}`;
-          await executePromptAndDeliver(prompt, platform, channelId);
+          await executePromptAndDeliver(prompt, platform, channelId, undefined, { threadTs });
         }
 
         // Mark nearby duplicates
@@ -269,7 +274,7 @@ async function handleSlackMessage(
       });
 
       // Spawn pending doTask tasks
-      await spawnPendingTasks(conv.id, "slack", channelId, log);
+      await spawnPendingTasks(conv.id, "slack", channelId, log, threadTs);
     } else {
       await postMessage(channelId, "Something went wrong: couldn't create conversation.", threadTs);
     }
