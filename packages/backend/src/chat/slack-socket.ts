@@ -137,12 +137,13 @@ export async function startSlackSocketMode() {
     await ack();
   });
 
-  // Use ONLY slack_event — this is the canonical event listener for Socket Mode
-  socketClient.on("slack_event", async ({ event, ack }: any) => {
+  // Listen for message events directly by event type name
+  // The socket-mode library emits events_api payloads using the event.type as the event name
+  async function handleEvent(payload: any) {
+    const { event, ack } = payload;
     if (ack) await ack();
     if (!event) return;
 
-    // Log all events for debugging
     log(`Event: ${event.type}`, {
       user: event.user,
       channel: event.channel,
@@ -155,15 +156,15 @@ export async function startSlackSocketMode() {
 
     if (!shouldProcess(event)) return;
 
-    // app_mention or message — handle both the same way
-    if (event.type === "app_mention" || event.type === "message") {
-      const text = event.text.replace(/<@[A-Z0-9]+>/gi, "").trim();
-      if (!text) return;
-      const threadTs = event.thread_ts ?? event.ts;
-      log(`Processing: "${text.slice(0, 120)}"`, { channel: event.channel, threadTs });
-      await handleSlackMessage(event.channel, text, threadTs);
-    }
-  });
+    const text = event.text?.replace(/<@[A-Z0-9]+>/gi, "").trim();
+    if (!text) return;
+    const threadTs = event.thread_ts ?? event.ts;
+    log(`Processing: "${text.slice(0, 120)}"`, { channel: event.channel, threadTs });
+    await handleSlackMessage(event.channel, text, threadTs);
+  }
+
+  socketClient.on("message", handleEvent);
+  socketClient.on("app_mention", handleEvent);
 
   socketClient.on("interactive", async ({ ack }: any) => {
     if (ack) await ack();
