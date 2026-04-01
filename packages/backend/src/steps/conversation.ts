@@ -93,10 +93,17 @@ export async function getConversationHistoryStep(
   const recentMessages = parsed.slice(splitIdx);
   const droppedMessages = parsed.slice(0, splitIdx);
 
-  const result: ModelMessage[] = recentMessages.map((m) => ({
-    role: m.role as "user" | "assistant",
-    content: m.content as any,
-  }));
+  const result: ModelMessage[] = recentMessages
+    .filter((m) => {
+      // Skip messages with empty/null content
+      if (typeof m.content === "string" && m.content.length === 0) return false;
+      if (m.content === null || m.content === undefined) return false;
+      return true;
+    })
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content as any,
+    }));
 
   // If we dropped messages, summarize them with LLM
   if (droppedMessages.length > 0) {
@@ -111,7 +118,8 @@ export async function getConversationHistoryStep(
       summary = `[${droppedMessages.length} earlier messages were compacted. The conversation covered various topics.]`;
     }
 
-    result.unshift({ role: "system" as any, content: summary });
+    // Use "user" role for the summary since Gemini doesn't support "system" in messages
+    result.unshift({ role: "user" as any, content: `[Context from earlier in this conversation]\n${summary}` });
   }
 
   return result;
